@@ -132,15 +132,19 @@ button:focus-visible{outline:2px solid var(--candle);outline-offset:3px}
   </section>
 </div>
 
-<script src="vendor/peerjs.min.js"></script>
+<script src="config.js"></script>
+<script src="vendor/livekit-client.umd.js"></script>
 <script>
 const $ = id => document.getElementById(id);
-const ROOM = new URLSearchParams(location.search).get('r') || 'alcance-myrtle-live';
+const LK = window.LivekitClient;
+const CFG = window.ALCANCE_CONFIG || {};
+const ROOM = new URLSearchParams(location.search).get('r') || CFG.defaultRoom;
 const screens = ['welcome','language','live','plansScreen'];
 function show(id){ screens.forEach(s => $(s).hidden = s !== id); window.scrollTo(0,0); }
 
-let peer = null, conn = null, call = null, joined = false, paused = false, voiceOn = true, showPt = false, scale = 1;
-let enText = '', ptText = '', retryTimer = null, wakeLock = null, isLive = false;
+let room = null, joined = false, paused = false, voiceOn = true, showPt = false, scale = 1;
+let enText = '', ptText = '', retryTimer = null, wakeLock = null, isLive = false, connecting = false;
+const dec = new TextDecoder();
 
 function setLive(on, label){
   isLive = on;
@@ -149,6 +153,7 @@ function setLive(on, label){
   }
 }
 function setStatus(t, ok){ $('status').textContent = t; $('status').classList.toggle('ok', !!ok); }
+function liveNow(){ setLive(true, 'Live now'); setStatus('Live · a few seconds behind the pastor', true); }
 function render(){
   if (paused) return;
   $('enPane').textContent = enText; $('ptPane').textContent = ptText;
@@ -160,47 +165,54 @@ function joinDelta(text, d){
   text += d;
   return text.length > 6000 ? text.slice(-5000) : text;
 }
-
-function connect(){
-  clearTimeout(retryTimer);
-  if (!peer || peer.destroyed) {
-    peer = new Peer();
-    peer.on('open', openConn);
-    peer.on('call', c => {
-      if (call) try { call.close(); } catch (e) {}
-      call = c; c.answer();
-      c.on('stream', s => { $('audio').srcObject = s; $('audio').muted = !voiceOn || paused; if (joined) $('audio').play().catch(() => {}); });
-    });
-    peer.on('error', err => {
-      if (err.type === 'peer-unavailable') { setLive(false, 'Not live yet'); setStatus('The translation has not started yet. Trying again…'); retry(); }
-      else { setStatus('Connection problem. Trying again…'); retry(true); }
-    });
-    peer.on('disconnected', () => { try { peer.reconnect(); } catch (e) {} });
-  } else if (peer.open) openConn();
+function applyAudio(){
+  const a = $('audio');
+  a.muted = !voiceOn || paused || !joined;
+  if (joined && !a.muted) a.play().catch(() => {});
 }
-function openConn(){
-  if (conn && conn.open) return;
-  conn = peer.connect(ROOM, { reliable: true });
-  conn.on('open', () => { setStatus('Connected', true); });
-  conn.on('data', msg => {
-    if (!msg || typeof msg !== 'object') return;
-    if (msg.t === 'hello') { enText = msg.en || ''; ptText = msg.pt || ''; render(); setLive(!!msg.live, msg.live ? 'Live now' : 'Starting soon'); if (msg.live) setStatus('Live · a few seconds behind the pastor', true); }
-    else if (msg.t === 'd') { if (msg.k === 'en') enText = joinDelta(enText, msg.d); else ptText = joinDelta(ptText, msg.d); render(); if (!isLive) { setLive(true, 'Live now'); setStatus('Live · a few seconds behind the pastor', true); } }
-    else if (msg.t === 'live') { setLive(true, 'Live now'); setStatus('Live · a few seconds behind the pastor', true); }
-    else if (msg.t === 'end') { setLive(false, 'Ended'); setStatus('The translation has ended. Thank you for joining!'); }
-  });
-  conn.on('close', () => { setLive(false, 'Reconnecting'); setStatus('Reconnecting…'); retry(); });
-  conn.on('error', () => retry());
-}
-function retry(full){
-  clearTimeout(retryTimer);
-  retryTimer = setTimeout(() => { if (full && peer) { try { peer.destroy(); } catch (e) {} peer = null; } conn = null; connect(); }, 5000);
+function hasOperatorAudio(){
+  for (const p of room.remoteParticipants.values())
+    for (const pub of p.audioTrackPublications.values()) if (pub.track || pub.isSubscribed) return true;
+  return false;
 }
 
-async function keepAwake(){
-  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+async function connect(){
+  if (connecting) return;
+  clearTimeout(retryTimer);
+  if (!CFG.tokenServerId || CFG.tokenServerId === 'PENDENTE') { setLive(false, 'Not set up'); setStatus('The translation channel is not set up yet.'); return; }
+  connecting = true;
+  try {
+    const src = LK.TokenSource.developmentTokenServer(CFG.tokenServerId);
+    const id = 'listener-' + Math.random().toString(36).slice(2, 10);
+    const { serverUrl, participantToken } = await src.fetch({ roomName: ROOM, participantIdentity: id, participantName: 'Listener' });
+    room = new LK.Room({ adaptiveStream: false, dynacast: false });
+    room.on(LK.RoomEvent.TrackSubscribed, (track) => {
+      if (track.kind !== 'audio') return;
+      track.attach($('audio')); applyAudio(); liveNow();
+    });
+    room.on(LK.RoomEvent.TrackUnsubscribed, (track) => { try { track.detach($('audio')); } catch (e) {} if (!hasOperatorAudio()) { setLive(false, 'Paused'); setStatus('Waiting for the translation to continue…'); } });
+    room.on(LK.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
+      let msg; try { msg = JSON.parse(dec.decode(payload)); } catch (e) { return; }
+      if (msg.t === 'hello') { enText = msg.en || ''; ptText = msg.pt || ''; render(); if (msg.live) liveNow(); else { setLive(false, 'Starting soon'); setStatus('Connected. The translation starts when the service begins.', true); } }
+      else if (msg.t === 'd') { if (msg.k === 'en') enText = joinDelta(enText, msg.d); else ptText = joinDelta(ptText, msg.d); render(); if (!isLive) liveNow(); }
+      else if (msg.t === 'live') liveNow();
+      else if (msg.t === 'end') { setLive(false, 'Ended'); setStatus('The translation has ended. Thank you for joining!'); }
+    });
+    room.on(LK.RoomEvent.Reconnecting, () => setStatus('Reconnecting…'));
+    room.on(LK.RoomEvent.Reconnected, () => { if (isLive) liveNow(); else setStatus('Connected', true); });
+    room.on(LK.RoomEvent.Disconnected, () => { setLive(false, 'Reconnecting'); setStatus('Reconnecting…'); room = null; retryTimer = setTimeout(connect, 3000); });
+    room.on(LK.RoomEvent.ParticipantDisconnected, () => { if (!room.remoteParticipants.size) { setLive(false, 'Not live yet'); setStatus('The translation has not started yet. Please wait…'); } });
+    await room.connect(serverUrl, participantToken, { autoSubscribe: true });
+    if (!room.remoteParticipants.size) { setLive(false, 'Not live yet'); setStatus('The translation has not started yet. Please wait…'); }
+    else if (!isLive) { setLive(false, 'Starting soon'); setStatus('Connected', true); }
+  } catch (e) {
+    console.error(e); setLive(false, 'Reconnecting'); setStatus('Connection problem. Trying again…');
+    room = null; retryTimer = setTimeout(connect, 5000);
+  } finally { connecting = false; }
 }
-document.addEventListener('visibilitychange', () => { if (joined && document.visibilityState === 'visible') keepAwake(); });
+
+async function keepAwake(){ try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {} }
+document.addEventListener('visibilitychange', () => { if (joined && document.visibilityState === 'visible') { keepAwake(); applyAudio(); } });
 
 $('join').onclick = () => show('language');
 $('plans').onclick = () => show('plansScreen');
@@ -214,17 +226,18 @@ function setPt(v){
 $('optPt').onclick = () => setPt(!showPt);
 $('start').onclick = () => {
   joined = true; show('live'); render(); keepAwake();
-  const a = $('audio'); a.muted = !voiceOn; a.play().catch(() => {});
-  if (!peer) connect();
+  try { room && room.startAudio(); } catch (e) {}
+  applyAudio();
+  if (!room) connect();
 };
-$('voice').onclick = () => { voiceOn = !voiceOn; $('voice').setAttribute('aria-pressed', voiceOn); $('audio').muted = !voiceOn || paused; if (voiceOn) $('audio').play().catch(() => {}); };
+$('voice').onclick = () => { voiceOn = !voiceOn; $('voice').setAttribute('aria-pressed', voiceOn); applyAudio(); };
 $('pt').onclick = () => setPt(!showPt);
 $('size').onclick = () => { scale = scale >= 1.5 ? 1 : +(scale + 0.25).toFixed(2); document.documentElement.style.setProperty('--scale', scale); };
 $('pause').onclick = () => {
   paused = !paused; $('pause').setAttribute('aria-pressed', paused);
   $('pause').innerHTML = paused ? '<span>▶</span>Back to live' : '<span>❚❚</span>Pause';
-  $('audio').muted = paused || !voiceOn;
-  if (!paused) { render(); $('audio').play().catch(() => {}); setStatus('Live · a few seconds behind the pastor', true); }
+  applyAudio();
+  if (!paused) { render(); if (isLive) liveNow(); }
   else setStatus('Paused. Tap "Back to live" to continue.');
 };
 

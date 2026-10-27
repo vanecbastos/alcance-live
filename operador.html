@@ -104,7 +104,7 @@ details summary{cursor:pointer;color:var(--muted);font-size:13px}
         <button class="secondary" id="copy">Copiar link</button>
         <button class="secondary" id="dlQr">Baixar QR Code</button>
       </div>
-      <p class="note">Este QR Code é fixo: vale para todos os cultos deste computador.</p>
+      <p class="note">Este QR Code é fixo: vale para todos os cultos.</p>
     </section>
 
     <section class="card">
@@ -123,7 +123,8 @@ details summary{cursor:pointer;color:var(--muted);font-size:13px}
   </div>
 </main>
 
-<script src="vendor/peerjs.min.js"></script>
+<script src="config.js"></script>
+<script src="vendor/livekit-client.umd.js"></script>
 <script src="vendor/qrcode.js"></script>
 <script>
 const $ = id => document.getElementById(id);
@@ -135,7 +136,7 @@ const store = {
 };
 function rid(){ const a = 'abcdefghjkmnpqrstuvwxyz23456789'; let s = ''; const r = crypto.getRandomValues(new Uint8Array(8)); for (const x of r) s += a[x % a.length]; return s; }
 
-let ROOM = store.get('room'); if (!ROOM) { ROOM = 'alcance-' + rid(); store.set('room', ROOM); }
+let ROOM = store.get('room2') || (window.ALCANCE_CONFIG || {}).defaultRoom || 'alcance-myrtle-live';
 let BASE = store.get('base') || 'https://vanecbastos.github.io/alcance-live/';
 $('key').value = store.get('key') || '';
 $('room').value = ROOM; $('base').value = BASE;
@@ -157,39 +158,66 @@ drawQr();
 $('copy').onclick = async () => { try { await navigator.clipboard.writeText(listenerUrl()); setStatus('Link copiado.'); } catch (e) { setStatus('Selecione o link e copie manualmente.'); } };
 $('dlQr').onclick = () => { const a = document.createElement('a'); a.href = $('qrImg').src; a.download = 'qr-alcance-live.png'; a.click(); };
 $('base').onchange = () => { BASE = $('base').value.trim(); store.set('base', BASE); drawQr(); };
-$('room').onchange = () => { ROOM = $('room').value.trim() || ROOM; store.set('room', ROOM); drawQr(); openChannel(true); };
+$('room').onchange = () => { ROOM = $('room').value.trim() || ROOM; store.set('room2', ROOM); drawQr(); openChannel(true); };
 $('forget').onclick = e => { e.preventDefault(); store.del('key'); $('key').value = ''; setStatus('Chave apagada deste computador.'); };
 
-/* ---------- Canal para os celulares ---------- */
-let peer = null; const conns = new Map(); // peerId -> {conn, call}
+/* ---------- Canal para os celulares (LiveKit) ---------- */
+const LK = window.LivekitClient;
+const CFG = window.ALCANCE_CONFIG || {};
+const enc = new TextEncoder();
+let room = null, roomConnecting = false, roomRetry = null, publication = null;
 let translatedStream = null, live = false, enText = '', ptText = '';
-function listeners(){ $('mListeners').textContent = [...conns.values()].filter(c => c.conn.open).length; }
-function broadcast(msg){ for (const c of conns.values()) if (c.conn.open) try { c.conn.send(msg); } catch (e) {} }
-function callListener(id){
-  const c = conns.get(id); if (!c || !translatedStream) return;
-  if (c.call) try { c.call.close(); } catch (e) {}
-  c.call = peer.call(id, translatedStream);
+function isListener(p){ return !String(p.identity).startsWith('operator-'); }
+function listeners(){ $('mListeners').textContent = room ? [...room.remoteParticipants.values()].filter(isListener).length : 0; }
+function sendData(msg, to){
+  if (!room || room.state !== 'connected') return;
+  const opts = { reliable: true, topic: 'captions' }; if (to) opts.destinationIdentities = [to];
+  room.localParticipant.publishData(enc.encode(JSON.stringify(msg)), opts).catch(() => {});
 }
-function openChannel(force){
-  if (peer && !force) return;
-  if (peer) try { peer.destroy(); } catch (e) {}
-  peer = new Peer(ROOM);
-  peer.on('open', id => { log('Canal aberto: ' + id); if (!running) setStatus('Pronto. O canal está aberto para os celulares.'); });
-  peer.on('connection', conn => {
-    conns.set(conn.peer, { conn, call: null });
-    conn.on('open', () => {
-      conn.send({ t:'hello', live, en: enText.slice(-1500), pt: ptText.slice(-1500) });
-      callListener(conn.peer); listeners(); log('Ouvinte conectado (' + conn.peer.slice(0,6) + ')');
+function broadcast(msg){ sendData(msg); }
+async function publishTranslation(){
+  if (!room || room.state !== 'connected' || !translatedStream || publication) return;
+  const track = translatedStream.getAudioTracks()[0]; if (!track) return;
+  try {
+    publication = await room.localParticipant.publishTrack(track, { name: 'en', source: LK.Track.Source.Microphone, dtx: false, red: true });
+    log('Áudio em inglês publicado para os ouvintes.');
+  } catch (e) { log('Falha ao publicar o áudio: ' + e.message); publication = null; }
+}
+async function unpublishTranslation(){
+  if (room && publication && publication.track) { try { await room.localParticipant.unpublishTrack(publication.track, false); } catch (e) {} }
+  publication = null;
+}
+async function openChannel(force){
+  if (roomConnecting) return;
+  if (room && !force) return;
+  clearTimeout(roomRetry);
+  if (!CFG.tokenServerId || CFG.tokenServerId === 'PENDENTE') { setStatus('Falta configurar o LiveKit (Token server ID em config.js).', true); return; }
+  if (room) { try { await room.disconnect(); } catch (e) {} room = null; publication = null; }
+  roomConnecting = true;
+  try {
+    const src = LK.TokenSource.developmentTokenServer(CFG.tokenServerId);
+    const { serverUrl, participantToken } = await src.fetch({ roomName: ROOM, participantIdentity: 'operator-' + rid(), participantName: 'Operador' });
+    const r = new LK.Room({ adaptiveStream: false, dynacast: false });
+    r.on(LK.RoomEvent.ParticipantConnected, p => {
+      listeners();
+      if (isListener(p)) { sendData({ t:'hello', live, en: enText.slice(-1500), pt: ptText.slice(-1500) }, p.identity); log('Ouvinte conectado.'); }
     });
-    conn.on('close', () => { const c = conns.get(conn.peer); if (c && c.call) try { c.call.close(); } catch (e) {} conns.delete(conn.peer); listeners(); });
-    conn.on('error', () => {});
-  });
-  peer.on('disconnected', () => { log('Canal desconectado, reconectando…'); try { peer.reconnect(); } catch (e) {} });
-  peer.on('error', err => {
-    log('Canal: ' + err.type);
-    if (err.type === 'unavailable-id') { setStatus('Este canal já está aberto em outra janela ou computador. Feche a outra janela; tentando de novo em 10 s.', true); setTimeout(() => openChannel(true), 10000); }
-    else if (err.type === 'network' || err.type === 'server-error' || err.type === 'socket-error') { setTimeout(() => openChannel(true), 5000); }
-  });
+    r.on(LK.RoomEvent.ParticipantDisconnected, listeners);
+    r.on(LK.RoomEvent.Reconnecting, () => log('Canal: reconectando…'));
+    r.on(LK.RoomEvent.Reconnected, () => log('Canal: reconectado.'));
+    r.on(LK.RoomEvent.Disconnected, () => {
+      log('Canal desconectado.'); if (room === r) { room = null; publication = null; }
+      roomRetry = setTimeout(async () => { await openChannel(); if (running) publishTranslation(); }, 3000);
+    });
+    await r.connect(serverUrl, participantToken, { autoSubscribe: false });
+    room = r; listeners();
+    log('Canal aberto: ' + ROOM);
+    if (!running) setStatus('Pronto. O canal está aberto para os celulares.');
+    for (const p of r.remoteParticipants.values()) if (isListener(p)) sendData({ t:'hello', live, en: enText.slice(-1500), pt: ptText.slice(-1500) }, p.identity);
+  } catch (e) {
+    log('Canal: ' + (e.message || e)); setStatus('Não consegui abrir o canal. Tentando de novo…', true);
+    roomRetry = setTimeout(() => openChannel(), 5000);
+  } finally { roomConnecting = false; }
 }
 openChannel();
 
@@ -239,8 +267,8 @@ async function start(){
     translatedEl = new Audio(); translatedEl.autoplay = true; translatedEl.volume = +$('transVol').value;
     pc.ontrack = ({ streams }) => {
       translatedStream = streams[0]; translatedEl.srcObject = translatedStream;
-      for (const id of conns.keys()) callListener(id);
-      log('Áudio traduzido recebido; enviando aos ouvintes.');
+      log('Áudio traduzido recebido.');
+      publishTranslation();
     };
     const ev = pc.createDataChannel('oai-events');
     ev.onmessage = ({ data }) => {
@@ -274,7 +302,7 @@ function stop(){
   if (!running) return;
   running = false; live = false; clearInterval(tick);
   broadcast({ t:'end' });
-  for (const c of conns.values()) if (c.call) try { c.call.close(); c.call = null; } catch (e) {}
+  unpublishTranslation();
   translatedStream = null; cleanup();
   $('state').classList.remove('on'); $('stateText').textContent = 'Desligada';
   $('start').disabled = false; $('stop').disabled = true;
