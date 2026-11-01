@@ -78,7 +78,13 @@ details summary{cursor:pointer;color:var(--muted);font-size:13px}
         <label><input type="radio" name="src" value="mic"> Mesa de som / microfone</label>
       </div>
       <p class="note" id="tabHelp">Ao iniciar, escolha a aba do vídeo em <b>Guia do Chrome</b> e deixe ligado <b>Compartilhar áudio da guia</b>. Depois dê play no vídeo.</p>
-      <p class="note" id="micHelp" hidden>Ao iniciar, o Chrome pergunta qual microfone usar. Na igreja, escolha a <b>StudioLive</b> (canais USB 1 e 2).</p>
+      <div id="micHelp" hidden>
+        <label for="micSel">Entrada de áudio (na igreja: <b>StudioLive</b>)</label>
+        <div style="display:flex;gap:8px;flex-wrap:wrap"><select id="micSel" style="flex:1;min-width:0;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit"><option value="">Clique em "Listar entradas"</option></select><button class="secondary" id="listMics" type="button">Listar entradas</button><button class="secondary" id="testMic" type="button">Testar som (15 s)</button></div>
+      </div>
+      <label>Nível do som que está chegando</label>
+      <div style="height:12px;border-radius:6px;background:var(--chip);overflow:hidden"><div id="meter" style="height:100%;width:0;background:var(--ok);transition:width .1s"></div></div>
+      <p class="note" id="meterNote">A barra verde se mexe quando há som. Se ficar parada com o pastor falando, confira a entrada e a mesa.</p>
       <div class="row">
         <div><label for="origVol">Ouvir o português neste computador</label><input id="origVol" type="range" min="0" max="1" step="0.05" value="0" style="width:100%"></div>
         <div><label for="transVol">Ouvir o inglês neste computador</label><input id="transVol" type="range" min="0" max="1" step="0.05" value="0" style="width:100%"></div>
@@ -144,7 +150,37 @@ $('room').value = ROOM; $('base').value = BASE;
 function log(m){ const el = $('log'); el.textContent += new Date().toISOString().slice(11,19) + '  ' + m + '\n'; el.scrollTop = el.scrollHeight; }
 function setStatus(m, err){ $('status').textContent = m; $('status').className = 'status' + (err ? ' err' : ''); }
 function srcMode(){ return document.querySelector('input[name=src]:checked').value; }
-document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => { $('tabHelp').hidden = srcMode() !== 'tab'; $('micHelp').hidden = srcMode() !== 'mic'; });
+function syncSrc(){ $('tabHelp').hidden = srcMode() !== 'tab'; $('micHelp').hidden = srcMode() !== 'mic'; store.set('src', srcMode()); }
+document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => { syncSrc(); if (srcMode() === 'mic') listMics(false); });
+async function listMics(ask){
+  try {
+    if (ask) { const s = await navigator.mediaDevices.getUserMedia({ audio:true }); s.getTracks().forEach(t => t.stop()); }
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
+    const saved = store.get('mic'); const sel = $('micSel'); sel.innerHTML = '';
+    if (!devs.length || !devs[0].label) { sel.innerHTML = '<option value="">Clique em "Listar entradas" e permita o microfone</option>'; return; }
+    for (const d of devs) { const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label; sel.appendChild(o); }
+    const pick = devs.find(d => d.deviceId === saved) || devs.find(d => /studiolive|presonus/i.test(d.label));
+    if (pick) sel.value = pick.deviceId;
+    store.set('mic', sel.value);
+  } catch (e) { setStatus('O Chrome não liberou o microfone. Clique no cadeado ao lado do endereço e permita o microfone.', true); }
+}
+$('listMics').onclick = () => listMics(true);
+$('testMic').onclick = async () => {
+  if (running) return;
+  try {
+    const dev = $('micSel').value;
+    const st = await navigator.mediaDevices.getUserMedia({ audio:{ deviceId: dev ? { exact: dev } : undefined, echoCancellation:false, noiseSuppression:false } });
+    const c = new (window.AudioContext || window.webkitAudioContext)(); const an = c.createAnalyser(); an.fftSize = 1024;
+    c.createMediaStreamSource(st).connect(an); const buf = new Float32Array(an.fftSize);
+    setStatus('Testando "' + st.getAudioTracks()[0].label + '". Fale ou peça para o técnico mandar som.');
+    const iv = setInterval(() => { an.getFloatTimeDomainData(buf); let s2 = 0; for (const v of buf) s2 += v*v; $('meter').style.width = Math.min(100, Math.sqrt(s2 / buf.length) * 400) + '%'; }, 100);
+    setTimeout(() => { clearInterval(iv); st.getTracks().forEach(t => t.stop()); c.close(); $('meter').style.width = '0'; setStatus('Teste de som encerrado.'); }, 15000);
+    listMics(false);
+  } catch (e) { setStatus('Não consegui abrir essa entrada de áudio. Clique em "Listar entradas" e permita o microfone.', true); }
+};
+$('micSel').onchange = () => store.set('mic', $('micSel').value);
+if (store.get('src') === 'mic') { document.querySelector('input[name=src][value=mic]').checked = true; }
+syncSrc(); if (srcMode() === 'mic') listMics(false);
 
 /* ---------- QR ---------- */
 function listenerUrl(){ return BASE.replace(/\/?$/, '/') + '?r=' + encodeURIComponent(ROOM); }
@@ -222,6 +258,7 @@ async function openChannel(force){
 openChannel();
 
 /* ---------- Tradução ---------- */
+let meterAn = null, meterTick = null;
 let pc, ctx, srcStream, monitorGain, translatedEl, tick, startedAt = 0, running = false;
 function joinDelta(text, d){ d = d || ''; if (text && d && /[^\s]$/.test(text) && /^[A-ZÀ-Ý"“(]/.test(d)) text += ' '; text += d; return text.length > 20000 ? text.slice(-15000) : text; }
 
@@ -238,16 +275,24 @@ async function getClientSecret(apiKey){
 async function getSource(){
   ctx = new (window.AudioContext || window.webkitAudioContext)();
   monitorGain = ctx.createGain(); monitorGain.gain.value = +$('origVol').value; monitorGain.connect(ctx.destination);
+  meterAn = ctx.createAnalyser(); meterAn.fftSize = 1024;
+  const buf = new Float32Array(meterAn.fftSize);
+  clearInterval(meterTick);
+  meterTick = setInterval(() => { if (!meterAn) return; meterAn.getFloatTimeDomainData(buf); let s2 = 0; for (const v of buf) s2 += v*v; const rms = Math.sqrt(s2 / buf.length); $('meter').style.width = Math.min(100, rms * 400) + '%'; }, 100);
   if (srcMode() === 'tab') {
     srcStream = await navigator.mediaDevices.getDisplayMedia({ video:true, audio:{ suppressLocalAudioPlayback:true, echoCancellation:false, noiseSuppression:false, autoGainControl:false }, selfBrowserSurface:'exclude', systemAudio:'exclude' });
     const at = srcStream.getAudioTracks()[0];
     if (!at) { srcStream.getTracks().forEach(t => t.stop()); throw new Error('A aba foi compartilhada sem áudio. Inicie de novo e deixe ligado "Compartilhar áudio da guia".'); }
     at.onended = () => { log('Compartilhamento da aba encerrado.'); stop(); };
-    ctx.createMediaStreamSource(new MediaStream([at])).connect(monitorGain);
+    const tabNode = ctx.createMediaStreamSource(new MediaStream([at])); tabNode.connect(monitorGain); tabNode.connect(meterAn);
     return at;
   }
-  srcStream = await navigator.mediaDevices.getUserMedia({ audio:{ echoCancellation:false, noiseSuppression:false, autoGainControl:true } });
-  return srcStream.getAudioTracks()[0];
+  const dev = $('micSel').value;
+  srcStream = await navigator.mediaDevices.getUserMedia({ audio:{ deviceId: dev ? { exact: dev } : undefined, echoCancellation:false, noiseSuppression:false, autoGainControl:true } });
+  const mt = srcStream.getAudioTracks()[0];
+  log('Entrada de áudio: ' + mt.label);
+  ctx.createMediaStreamSource(new MediaStream([mt])).connect(meterAn);
+  return mt;
 }
 $('origVol').oninput = () => { if (monitorGain) monitorGain.gain.value = +$('origVol').value; };
 $('transVol').oninput = () => { if (translatedEl) translatedEl.volume = +$('transVol').value; };
@@ -296,7 +341,7 @@ function cleanup(){
   try { pc && pc.close(); } catch (e) {}
   try { srcStream && srcStream.getTracks().forEach(t => t.stop()); } catch (e) {}
   try { ctx && ctx.close(); } catch (e) {}
-  pc = null; srcStream = null; ctx = null; monitorGain = null;
+  pc = null; srcStream = null; ctx = null; monitorGain = null; meterAn = null; clearInterval(meterTick); $('meter').style.width = '0';
 }
 function stop(){
   if (!running) return;
