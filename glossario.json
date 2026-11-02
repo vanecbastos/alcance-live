@@ -1,0 +1,29 @@
+{
+  "_sobre": "Glossário da Alcance Myrtle Beach para a tradução (Motor B). Nomes próprios ficam como estão; termos têm a tradução preferida.",
+  "nomes": [
+    "Pastor Deigma",
+    "Pastor Osvaldo",
+    "Pastor Itamar",
+    "Pastor Márcio",
+    "Pastora Clisses",
+    "Keiter",
+    "Jubilene"
+  ],
+  "nomes_a_confirmar": ["Pastor Alan", "Pastor Wini", "Marlene", "Tamires", "Fabiano", "Fabrícia"],
+  "termos": {
+    "galardão": "reward",
+    "desfalecer": "faint / grow weary",
+    "Santa Ceia": "the Lord's Supper / Communion",
+    "culto de ceia": "Communion service",
+    "dons": "gifts (spiritual gifts)",
+    "glória": "glory",
+    "irmão / irmã": "brother / sister",
+    "queridos": "dear ones",
+    "célula": "small group (cell group)"
+  },
+  "regras": [
+    "'seu' / 'sua' dirigido à congregação = 'your', não 'His'",
+    "Manter citações bíblicas no estilo de uma tradução inglesa reconhecida",
+    "Não resumir nem responder: apenas interpretar o que o pregador diz"
+  ]
+}
