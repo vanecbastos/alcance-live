@@ -72,6 +72,25 @@ details summary{cursor:pointer;color:var(--muted);font-size:13px}
     </section>
 
     <section class="card">
+      <h2>Voz da tradução</h2>
+      <div class="radios" style="flex-direction:column;gap:8px">
+        <label><input type="radio" name="engine" value="B" checked> <span><b>Voz fixa</b> (Motor B): sempre a mesma voz, segue o glossário da igreja. Custo maior, cerca de US$ 5 a 8 por hora (estimativa).</span></label>
+        <label><input type="radio" name="engine" value="A"> <span><b>Voz automática</b> (Motor A): imita a voz de quem fala. Cerca de US$ 3 por hora.</span></label>
+      </div>
+      <div id="voiceRow">
+        <label for="voiceSel">Voz fixa</label>
+        <select id="voiceSel" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit">
+          <option value="cedar">Cedar · masculina (recomendada)</option>
+          <option value="ash">Ash · masculina</option>
+          <option value="echo">Echo · masculina</option>
+          <option value="verse">Verse · masculina</option>
+          <option value="marin">Marin · feminina</option>
+        </select>
+      </div>
+      <p class="note">O custo mostrado no painel é calculado pelo uso real informado pela OpenAI.</p>
+    </section>
+
+    <section class="card">
       <h2>Fonte do áudio</h2>
       <div class="radios">
         <label><input type="radio" name="src" value="tab" checked> Aba do Chrome (YouTube)</label>
@@ -134,7 +153,6 @@ details summary{cursor:pointer;color:var(--muted);font-size:13px}
 <script src="vendor/qrcode.js"></script>
 <script>
 const $ = id => document.getElementById(id);
-const PRICE = 0.034 + 0.017;
 const store = {
   get(k){ try { return localStorage.getItem('alcance-op-' + k); } catch (e) { return null; } },
   set(k, v){ try { localStorage.setItem('alcance-op-' + k, v); } catch (e) {} },
@@ -151,7 +169,13 @@ function log(m){ const el = $('log'); el.textContent += new Date().toISOString()
 function setStatus(m, err){ $('status').textContent = m; $('status').className = 'status' + (err ? ' err' : ''); }
 function srcMode(){ return document.querySelector('input[name=src]:checked').value; }
 function syncSrc(){ $('tabHelp').hidden = srcMode() !== 'tab'; $('micHelp').hidden = srcMode() !== 'mic'; store.set('src', srcMode()); }
-document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => { syncSrc(); if (srcMode() === 'mic') listMics(false); });
+document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => { syncSrc(); if (srcMode() === 'mic') listMics(false);
+function syncEngine(){ $('voiceRow').hidden = engineMode() !== 'B'; store.set('engine', engineMode()); }
+if (store.get('engine') === 'A') document.querySelector('input[name=engine][value=A]').checked = true;
+if (store.get('voice')) $('voiceSel').value = store.get('voice');
+document.querySelectorAll('input[name=engine]').forEach(r => r.onchange = syncEngine);
+$('voiceSel').onchange = () => store.set('voice', $('voiceSel').value);
+syncEngine(); });
 async function listMics(ask){
   try {
     if (ask) { const s = await navigator.mediaDevices.getUserMedia({ audio:true }); s.getTracks().forEach(t => t.stop()); }
@@ -181,6 +205,12 @@ $('testMic').onclick = async () => {
 $('micSel').onchange = () => store.set('mic', $('micSel').value);
 if (store.get('src') === 'mic') { document.querySelector('input[name=src][value=mic]').checked = true; }
 syncSrc(); if (srcMode() === 'mic') listMics(false);
+function syncEngine(){ $('voiceRow').hidden = engineMode() !== 'B'; store.set('engine', engineMode()); }
+if (store.get('engine') === 'A') document.querySelector('input[name=engine][value=A]').checked = true;
+if (store.get('voice')) $('voiceSel').value = store.get('voice');
+document.querySelectorAll('input[name=engine]').forEach(r => r.onchange = syncEngine);
+$('voiceSel').onchange = () => store.set('voice', $('voiceSel').value);
+syncEngine();
 
 /* ---------- QR ---------- */
 function listenerUrl(){ return BASE.replace(/\/?$/, '/') + '?r=' + encodeURIComponent(ROOM); }
@@ -259,19 +289,158 @@ openChannel();
 
 /* ---------- Tradução ---------- */
 let meterAn = null, meterTick = null;
-let pc, ctx, srcStream, monitorGain, translatedEl, tick, startedAt = 0, running = false;
-function joinDelta(text, d){ d = d || ''; if (text && d && /[^\s]$/.test(text) && /^[A-ZÀ-Ý"“(]/.test(d)) text += ' '; text += d; return text.length > 20000 ? text.slice(-15000) : text; }
+let ctx, srcStream, monitorGain, translatedEl, tick, startedAt = 0, running = false;
+function joinDelta(text, d){ d = d || ''; if (text && d && ((/[^\s]$/.test(text) && /^[A-ZÀ-Ý"“(]/.test(d)) || (/[.,!?;:”"']$/.test(text) && /^[A-Za-zÀ-ú]/.test(d)))) text += ' '; text += d; return text.length > 20000 ? text.slice(-15000) : text; }
 
-async function getClientSecret(apiKey){
-  const r = await fetch('https://api.openai.com/v1/realtime/translations/client_secrets', {
-    method:'POST', headers:{ Authorization:`Bearer ${apiKey}`, 'Content-Type':'application/json' },
-    body: JSON.stringify({ session:{ model:'gpt-realtime-translate', audio:{ input:{ transcription:{ model:'gpt-realtime-whisper' } }, output:{ language:'en' } } }, expires_after:{ anchor:'created_at', seconds:600 } })
-  });
-  const body = await r.text();
-  if (!r.ok) throw new Error('A OpenAI recusou a sessão (' + r.status + '). Confira a chave e o crédito. ' + body.slice(0,200));
-  const j = JSON.parse(body); const s = j.value || (j.client_secret && j.client_secret.value);
-  if (!s) throw new Error('Resposta sem client secret.'); return s;
+/* ---------- Motores de tradução ---------- */
+// Motor A: gpt-realtime-translate (voz imita o pregador). Motor B: modelo de conversa com voz fixa, instruções e glossário.
+function engineMode(){ return document.querySelector('input[name=engine]:checked').value; }
+const GLOSSARY_FALLBACK = { nomes:['Pastor Deigma','Pastor Osvaldo','Marlene','Pastor Itamar','Pastor Márcio','Keiter','Pastora Clisses','Jubilene','Tamires','Fabiano'], termos:{ 'galardão':'reward','desfalecer':'faint','Santa Ceia':"the Lord's Supper",'dons':'gifts','glória':'glory','queridos':'dear ones' } };
+let glossary = GLOSSARY_FALLBACK;
+fetch('glossario.json', { cache:'no-store' }).then(r => r.ok ? r.json() : null).then(g => { if (g && g.nomes) glossary = g; }).catch(() => {});
+function instructions(){
+  const names = (glossary.nomes || []).concat(glossary.nomes_a_confirmar || []).map(n => n.replace(/\s*\(.*\)$/, '')).join(', ');
+  const terms = Object.entries(glossary.termos || {}).map(([k, v]) => k + ' = ' + v).join('; ');
+  return [
+    'You are a professional simultaneous interpreter at a Brazilian evangelical church service (Alcance Myrtle Beach, South Carolina).',
+    'The speaker preaches in Brazilian Portuguese. Your only job is to say, in natural and faithful American English, what the speaker just said.',
+    'Rules:',
+    '- Interpret only the speech since your previous turn. Never repeat earlier parts.',
+    '- You are not a participant. Never answer, greet, comment, explain, summarize or add anything. Never say you are an AI.',
+    '- Keep the speaker in first person: "eu" = "I", "nós" = "we". When the speaker addresses the congregation, "você", "vocês", "seu", "sua" = "you" and "your" (never "His"), unless it clearly refers to God.',
+    '- Follow the speaker\'s energy and emotion: passionate when he is passionate, gentle when he prays softly.',
+    '- "Aleluia" = "Hallelujah", "Amém" = "Amen", "Glória a Deus" = "Glory to God".',
+    '- Quote Bible verses the way a standard modern English Bible says them, and say references naturally (for example "Luke chapter twenty-two, verse fourteen").',
+    '- Keep these proper names exactly as written: ' + names + '.',
+    '- Preferred terms: ' + terms + '.',
+    '- If a word is unclear, choose the meaning that fits a Christian sermon. Do not invent content.'
+  ].join('\n');
 }
+async function postJson(url, key, body){
+  const r = await fetch(url, { method:'POST', headers:{ Authorization:`Bearer ${key}`, 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+  const t = await r.text(); return { ok: r.ok, status: r.status, text: t };
+}
+function secretOf(text){ const j = JSON.parse(text); return j.value || (j.client_secret && j.client_secret.value); }
+async function getClientSecret(apiKey, mode){
+  if (mode === 'A') {
+    const r = await postJson('https://api.openai.com/v1/realtime/translations/client_secrets', apiKey,
+      { session:{ model:'gpt-realtime-translate', audio:{ input:{ transcription:{ model:'gpt-realtime-whisper' } }, output:{ language:'en' } } }, expires_after:{ anchor:'created_at', seconds:600 } });
+    if (!r.ok) throw new Error('A OpenAI recusou a sessão (' + r.status + '). Confira a chave e o crédito. ' + r.text.slice(0,200));
+    return { secret: secretOf(r.text), url: 'https://api.openai.com/v1/realtime/translations/calls' };
+  }
+  let last = '';
+  for (const model of ['gpt-realtime-2.1', 'gpt-realtime-2']) {
+    const r = await postJson('https://api.openai.com/v1/realtime/client_secrets', apiKey, {
+      expires_after:{ anchor:'created_at', seconds:600 },
+      session:{ type:'realtime', model, instructions: instructions(), output_modalities:['audio'],
+        audio:{
+          input:{ transcription:{ model:'whisper-1', language:'pt' },
+                  turn_detection:{ type:'server_vad', threshold:0.5, prefix_padding_ms:300, silence_duration_ms:550, create_response:false, interrupt_response:false } },
+          output:{ voice: $('voiceSel').value }
+        } }
+    });
+    if (r.ok) { log('Motor B: modelo ' + model + ', voz ' + $('voiceSel').value); return { secret: secretOf(r.text), url: 'https://api.openai.com/v1/realtime/calls' }; }
+    last = '(' + r.status + ') ' + r.text.slice(0,200); log('Motor B recusou ' + model + ': ' + last);
+  }
+  throw new Error('A OpenAI recusou o Motor B ' + last);
+}
+
+/* Custo: Motor A por minuto; Motor B pelo uso real informado pela OpenAI (preços de áudio publicados; texto estimado). */
+let costB = 0;
+function costNow(secs){
+  if (engineMode() === 'A') return secs / 60 * (0.034 + 0.017);
+  return costB + secs / 60 * 0.006;
+}
+function addUsage(u){
+  if (!u) return;
+  const i = u.input_token_details || {}, o = u.output_token_details || {}, c = (i.cached_tokens_details || {});
+  const audioIn = (i.audio_tokens || 0) - (c.audio_tokens || 0), cachedAudio = c.audio_tokens || 0;
+  const textIn = (i.text_tokens || 0) - (c.text_tokens || 0), cachedText = c.text_tokens || 0;
+  costB += audioIn * 32e-6 + cachedAudio * 0.4e-6 + textIn * 4e-6 + cachedText * 0.4e-6 + (o.audio_tokens || 0) * 64e-6 + (o.text_tokens || 0) * 16e-6;
+}
+
+/* Uma sessão de tradução. Renovada a cada 50 min (limite de 60 min por sessão). */
+let session = null, renewTimer = null;
+async function openSession(track, key){
+  const mode = engineMode();
+  const { secret, url } = await getClientSecret(key, mode);
+  const s = { mode, pc: new RTCPeerConnection(), dc: null, active: false, pending: false, items: [], ptByItem: {} };
+  s.pc.addTrack(track, new MediaStream([track]));
+  s.pc.onconnectionstatechange = () => { log('Tradução: ' + s.pc.connectionState); if (s === session && s.pc.connectionState === 'failed') renewSession('queda de conexão'); };
+  s.gotTrack = new Promise(res => { s.pc.ontrack = ({ streams }) => res(streams[0]); });
+  s.dc = s.pc.createDataChannel('oai-events');
+  s.dc.onmessage = ({ data }) => handleEvent(s, JSON.parse(data));
+  const offer = await s.pc.createOffer(); await s.pc.setLocalDescription(offer);
+  const r = await fetch(url, { method:'POST', headers:{ Authorization:`Bearer ${secret}`, 'Content-Type':'application/sdp' }, body: offer.sdp });
+  if (!r.ok) throw new Error('Falha ao conectar à tradução (' + r.status + '): ' + (await r.text()).slice(0,200));
+  await s.pc.setRemoteDescription({ type:'answer', sdp: await r.text() });
+  return s;
+}
+function addEn(d){ enText = joinDelta(enText, d); $('outText').textContent = enText; $('outText').scrollTop = 1e9; broadcast({ t:'d', k:'en', d }); }
+function addPt(d){ ptText = joinDelta(ptText, d); $('srcText').textContent = ptText; $('srcText').scrollTop = 1e9; broadcast({ t:'d', k:'pt', d }); }
+function respond(s){
+  if (s.active) { s.pending = true; return; }
+  s.active = true; s.pending = false;
+  try { s.dc.send(JSON.stringify({ type:'response.create' })); } catch (e) { s.active = false; }
+}
+function prune(s){
+  while (s.items.length > 6) { const id = s.items.shift(); try { s.dc.send(JSON.stringify({ type:'conversation.item.delete', item_id: id })); } catch (e) {} }
+}
+function handleEvent(s, e){
+  if (s !== session && !(session && session.next === s)) return;
+  if (e.type === 'error') {
+    const code = e.error && e.error.code;
+    if (code === 'conversation_already_has_active_response') { s.pending = true; return; }
+    if (code === 'item_delete_invalid_item_id') return;
+    log('ERRO: ' + JSON.stringify(e.error || e)); setStatus('Erro da tradução: ' + ((e.error && e.error.message) || 'ver registro'), true); return;
+  }
+  if (s.mode === 'A') {
+    if (e.type === 'session.output_transcript.delta') addEn(e.delta);
+    else if (e.type === 'session.input_transcript.delta') addPt(e.delta);
+    return;
+  }
+  switch (e.type) {
+    case 'conversation.item.added': case 'conversation.item.created':
+      if (e.item && e.item.id && !s.items.includes(e.item.id)) s.items.push(e.item.id); break;
+    case 'conversation.item.input_audio_transcription.delta':
+      s.ptByItem[e.item_id] = true; addPt(e.delta); break;
+    case 'conversation.item.input_audio_transcription.completed': {
+      const t = (e.transcript || '').trim();
+      if (!s.ptByItem[e.item_id] && t) addPt(t + ' ');
+      else addPt(' ');
+      if (t.split(/\s+/).filter(w => /[a-zA-ZÀ-ú]/.test(w)).length >= 2) respond(s);
+      break;
+    }
+    case 'response.created': s.active = true; break;
+    case 'response.output_audio_transcript.delta': addEn(e.delta); break;
+    case 'response.output_audio_transcript.done': addEn(' '); break;
+    case 'response.done':
+      s.active = false; addUsage(e.response && e.response.usage); prune(s);
+      if (s.pending) respond(s);
+      break;
+  }
+}
+async function swapTo(s){
+  const stream = await s.gotTrack;
+  translatedStream = stream; translatedEl.srcObject = stream;
+  const newTrack = stream.getAudioTracks()[0];
+  if (publication && publication.track && newTrack) { try { await publication.track.replaceTrack(newTrack); log('Áudio trocado para a sessão nova.'); } catch (e) { log('Troca de áudio falhou: ' + e.message); await unpublishTranslation(); publishTranslation(); } }
+  else publishTranslation();
+}
+async function renewSession(why){
+  if (!running || !srcStream) return;
+  log('Renovando a sessão de tradução (' + why + ')…');
+  const old = session;
+  try {
+    const s = await openSession(srcStream.getAudioTracks()[0], store.get('key'));
+    if (old) old.next = s;
+    await swapTo(s);
+    session = s;
+    setTimeout(() => { try { old && old.pc.close(); } catch (e) {} }, 4000);
+  } catch (e) { log('Renovação falhou: ' + e.message); setTimeout(() => renewSession('nova tentativa'), 5000); }
+  clearTimeout(renewTimer); renewTimer = setTimeout(() => renewSession('50 minutos'), 50 * 60 * 1000);
+}
+
 async function getSource(){
   ctx = new (window.AudioContext || window.webkitAudioContext)();
   monitorGain = ctx.createGain(); monitorGain.gain.value = +$('origVol').value; monitorGain.connect(ctx.destination);
@@ -305,43 +474,29 @@ async function start(){
   try {
     const track = await getSource();
     setStatus('Conectando à tradução…');
-    const secret = await getClientSecret(key);
-    pc = new RTCPeerConnection();
-    pc.addTrack(track, new MediaStream([track]));
-    pc.onconnectionstatechange = () => { log('Tradução: ' + pc.connectionState); if (pc && pc.connectionState === 'failed') { setStatus('A conexão com a tradução caiu. Clique em Encerrar e inicie de novo.', true); } };
     translatedEl = new Audio(); translatedEl.autoplay = true; translatedEl.volume = +$('transVol').value;
-    pc.ontrack = ({ streams }) => {
-      translatedStream = streams[0]; translatedEl.srcObject = translatedStream;
-      log('Áudio traduzido recebido.');
-      publishTranslation();
-    };
-    const ev = pc.createDataChannel('oai-events');
-    ev.onmessage = ({ data }) => {
-      const e = JSON.parse(data);
-      if (e.type === 'session.output_transcript.delta') { enText = joinDelta(enText, e.delta); $('outText').textContent = enText; $('outText').scrollTop = 1e9; broadcast({ t:'d', k:'en', d:e.delta }); }
-      else if (e.type === 'session.input_transcript.delta') { ptText = joinDelta(ptText, e.delta); $('srcText').textContent = ptText; $('srcText').scrollTop = 1e9; broadcast({ t:'d', k:'pt', d:e.delta }); }
-      else if (e.type === 'error') { log('ERRO: ' + JSON.stringify(e.error || e)); setStatus('Erro da tradução: ' + ((e.error && e.error.message) || 'ver registro'), true); }
-    };
-    const offer = await pc.createOffer(); await pc.setLocalDescription(offer);
-    const r = await fetch('https://api.openai.com/v1/realtime/translations/calls', { method:'POST', headers:{ Authorization:`Bearer ${secret}`, 'Content-Type':'application/sdp' }, body: offer.sdp });
-    if (!r.ok) throw new Error('Falha ao conectar à tradução (' + r.status + '): ' + (await r.text()).slice(0,200));
-    await pc.setRemoteDescription({ type:'answer', sdp: await r.text() });
+    costB = 0;
+    session = await openSession(track, key);
+    swapTo(session);
     if (ctx.state === 'suspended') await ctx.resume();
     running = true; live = true; startedAt = performance.now(); enText = ''; ptText = '';
     broadcast({ t:'live' });
     $('state').classList.add('on'); $('stateText').textContent = 'No ar';
-    $('stop').disabled = false;
-    tick = setInterval(() => { const s = (performance.now() - startedAt) / 1000; $('mTime').textContent = Math.floor(s/60) + ':' + String(Math.floor(s%60)).padStart(2,'0'); $('mCost').textContent = 'US$ ' + (s/60*PRICE).toFixed(2).replace('.', ','); }, 1000);
-    setStatus('No ar. Os celulares que escanearem o QR Code já recebem a tradução.');
+    $('stop').disabled = false; document.querySelectorAll('input[name=engine]').forEach(r => r.disabled = true); $('voiceSel').disabled = true;
+    clearTimeout(renewTimer); renewTimer = setTimeout(() => renewSession('50 minutos'), 50 * 60 * 1000);
+    tick = setInterval(() => { const sec = (performance.now() - startedAt) / 1000; $('mTime').textContent = Math.floor(sec/60) + ':' + String(Math.floor(sec%60)).padStart(2,'0'); $('mCost').textContent = 'US$ ' + costNow(sec).toFixed(2).replace('.', ','); }, 1000);
+    setStatus('No ar' + (engineMode() === 'B' ? ' (voz fixa)' : '') + '. Os celulares que escanearem o QR Code já recebem a tradução.');
   } catch (e) {
     log(String(e)); setStatus(e.message || String(e), true); cleanup(); $('start').disabled = false;
   }
 }
 function cleanup(){
-  try { pc && pc.close(); } catch (e) {}
+  try { session && session.pc.close(); } catch (e) {}
+  session = null; clearTimeout(renewTimer);
+  document.querySelectorAll('input[name=engine]').forEach(r => r.disabled = false); $('voiceSel').disabled = false;
   try { srcStream && srcStream.getTracks().forEach(t => t.stop()); } catch (e) {}
   try { ctx && ctx.close(); } catch (e) {}
-  pc = null; srcStream = null; ctx = null; monitorGain = null; meterAn = null; clearInterval(meterTick); $('meter').style.width = '0';
+  srcStream = null; ctx = null; monitorGain = null; meterAn = null; clearInterval(meterTick); $('meter').style.width = '0';
 }
 function stop(){
   if (!running) return;

@@ -161,7 +161,7 @@ function render(){
 }
 function joinDelta(text, d){
   d = d || '';
-  if (text && d && /[^\s]$/.test(text) && /^[A-ZÀ-Ý"“(]/.test(d)) text += ' ';
+  if (text && d && ((/[^\s]$/.test(text) && /^[A-ZÀ-Ý"“(]/.test(d)) || (/[.,!?;:”"']$/.test(text) && /^[A-Za-zÀ-ú]/.test(d)))) text += ' ';
   text += d;
   return text.length > 6000 ? text.slice(-5000) : text;
 }

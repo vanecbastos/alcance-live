@@ -3,13 +3,20 @@
   "nomes": [
     "Pastor Deigma",
     "Pastor Osvaldo",
+    "Marlene (esposa do Pastor Osvaldo)",
     "Pastor Itamar",
     "Pastor Márcio",
+    "Keiter (esposa do Pastor Márcio)",
     "Pastora Clisses",
-    "Keiter",
-    "Jubilene"
+    "Jubilene",
+    "Tamires",
+    "Fabiano"
   ],
-  "nomes_a_confirmar": ["Pastor Alan", "Pastor Wini", "Marlene", "Tamires", "Fabiano", "Fabrícia"],
+  "nomes_a_confirmar": [
+    "Pastor Alan",
+    "Pastor Wini",
+    "Fabrícia"
+  ],
   "termos": {
     "galardão": "reward",
     "desfalecer": "faint / grow weary",
