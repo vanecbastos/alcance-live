@@ -63,6 +63,10 @@ button:focus-visible{outline:2px solid var(--candle);outline-offset:3px}
 .ctl{display:flex;flex-direction:column;align-items:center;gap:4px;padding:10px 4px;border-radius:12px;background:var(--panel);border:1px solid var(--line);font-size:.8rem;color:var(--muted);min-height:64px;justify-content:center}
 .ctl span{font-size:1.2rem;line-height:1;color:var(--ink);font-weight:600}
 .ctl[aria-pressed="true"]{border-color:var(--candle);color:var(--ink)}
+.listen{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;padding:4px;border-radius:14px;background:var(--panel);border:1px solid var(--line)}
+.listen button{border:0;border-radius:10px;padding:10px 4px;background:transparent;color:var(--muted);font-weight:600;font-size:.92rem;min-height:44px}
+.listen button[aria-pressed="true"]{background:var(--candle);color:var(--candle-ink)}
+.listen-label{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 -8px 4px}
 .status{font-size:.9rem;color:var(--muted);text-align:center;margin:0}
 .status.ok{color:var(--ok)}
 @media (prefers-reduced-motion:reduce){.pill.on .dot{animation:none}}
@@ -114,6 +118,12 @@ button:focus-visible{outline:2px solid var(--candle);outline-offset:3px}
       <div class="pane pt" id="ptPane" hidden data-empty="O texto em português aparece aqui."></div>
     </div>
     <p class="status" id="status">Connecting…</p>
+    <p class="listen-label">Listen to</p>
+    <div class="listen" role="group" aria-label="Listen to">
+      <button id="lsEn" aria-pressed="true">English</button>
+      <button id="lsOrig" aria-pressed="false">Original</button>
+      <button id="lsMix" aria-pressed="false">Both</button>
+    </div>
     <div class="controls">
       <button class="ctl" id="voice" aria-pressed="true"><span>♪</span>Voice</button>
       <button class="ctl" id="pt" aria-pressed="false"><span>PT</span>Português</button>
@@ -121,6 +131,7 @@ button:focus-visible{outline:2px solid var(--candle);outline-offset:3px}
       <button class="ctl" id="pause" aria-pressed="false"><span>❚❚</span>Pause</button>
     </div>
     <audio id="audio" autoplay playsinline></audio>
+    <audio id="audioOrig" autoplay playsinline></audio>
   </section>
 
   <section class="screen" id="plansScreen" hidden>
@@ -165,11 +176,19 @@ function joinDelta(text, d){
   text += d;
   return text.length > 6000 ? text.slice(-5000) : text;
 }
+let listenMode = 'en';
+try { listenMode = localStorage.getItem('alcance-listen') || 'en'; } catch (e) {}
 function applyAudio(){
-  const a = $('audio');
-  a.muted = !voiceOn || paused || !joined;
-  if (joined && !a.muted) a.play().catch(() => {});
+  const a = $('audio'), o = $('audioOrig');
+  const off = !voiceOn || paused || !joined;
+  a.muted = off || listenMode === 'orig';
+  o.muted = off || listenMode === 'en';
+  o.volume = listenMode === 'mix' ? 0.25 : 1;
+  for (const [id, m] of [['lsEn','en'],['lsOrig','orig'],['lsMix','mix']]) $(id).setAttribute('aria-pressed', listenMode === m);
+  if (!a.muted) a.play().catch(() => {});
+  if (!o.muted) o.play().catch(() => {});
 }
+function setListen(m){ listenMode = m; try { localStorage.setItem('alcance-listen', m); } catch (e) {} applyAudio(); }
 function hasOperatorAudio(){
   for (const p of room.remoteParticipants.values())
     for (const pub of p.audioTrackPublications.values()) if (pub.track || pub.isSubscribed) return true;
@@ -186,11 +205,13 @@ async function connect(){
     const id = 'listener-' + Math.random().toString(36).slice(2, 10);
     const { serverUrl, participantToken } = await src.fetch({ roomName: ROOM, participantIdentity: id, participantName: 'Listener' });
     room = new LK.Room({ adaptiveStream: false, dynacast: false });
-    room.on(LK.RoomEvent.TrackSubscribed, (track) => {
+    room.on(LK.RoomEvent.TrackSubscribed, (track, pub) => {
       if (track.kind !== 'audio') return;
-      track.attach($('audio')); applyAudio(); liveNow();
+      const isOrig = pub && pub.trackName === 'original';
+      track.attach($(isOrig ? 'audioOrig' : 'audio')); applyAudio();
+      if (!isOrig) liveNow();
     });
-    room.on(LK.RoomEvent.TrackUnsubscribed, (track) => { try { track.detach($('audio')); } catch (e) {} if (!hasOperatorAudio()) { setLive(false, 'Paused'); setStatus('Waiting for the translation to continue…'); } });
+    room.on(LK.RoomEvent.TrackUnsubscribed, (track) => { try { track.detach(); } catch (e) {} if (!hasOperatorAudio()) { setLive(false, 'Paused'); setStatus('Waiting for the translation to continue…'); } });
     room.on(LK.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
       let msg; try { msg = JSON.parse(dec.decode(payload)); } catch (e) { return; }
       if (msg.t === 'hello') { enText = msg.en || ''; ptText = msg.pt || ''; render(); if (msg.live) liveNow(); else { setLive(false, 'Starting soon'); setStatus('Connected. The translation starts when the service begins.', true); } }
@@ -230,6 +251,9 @@ $('start').onclick = () => {
   applyAudio();
   if (!room) connect();
 };
+$('lsEn').onclick = () => setListen('en');
+$('lsOrig').onclick = () => setListen('orig');
+$('lsMix').onclick = () => setListen('mix');
 $('voice').onclick = () => { voiceOn = !voiceOn; $('voice').setAttribute('aria-pressed', voiceOn); applyAudio(); };
 $('pt').onclick = () => setPt(!showPt);
 $('size').onclick = () => { scale = scale >= 1.5 ? 1 : +(scale + 0.25).toFixed(2); document.documentElement.style.setProperty('--scale', scale); };

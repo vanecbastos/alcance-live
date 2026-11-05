@@ -249,6 +249,16 @@ async function publishTranslation(){
     log('Áudio em inglês publicado para os ouvintes.');
   } catch (e) { log('Falha ao publicar o áudio: ' + e.message); publication = null; }
 }
+let originalTrack = null, originalPub = null;
+async function publishOriginal(){
+  if (!room || room.state !== 'connected' || !originalTrack || originalPub) return;
+  try { originalPub = await room.localParticipant.publishTrack(originalTrack, { name: 'original', source: LK.Track.Source.Unknown, dtx: false, red: true }); log('Áudio original publicado para os ouvintes.'); }
+  catch (e) { log('Falha ao publicar o áudio original: ' + e.message); originalPub = null; }
+}
+async function unpublishOriginal(){
+  if (room && originalPub && originalPub.track) { try { await room.localParticipant.unpublishTrack(originalPub.track, false); } catch (e) {} }
+  originalPub = null;
+}
 async function unpublishTranslation(){
   if (room && publication && publication.track) { try { await room.localParticipant.unpublishTrack(publication.track, false); } catch (e) {} }
   publication = null;
@@ -258,7 +268,7 @@ async function openChannel(force){
   if (room && !force) return;
   clearTimeout(roomRetry);
   if (!CFG.tokenServerId || CFG.tokenServerId === 'PENDENTE') { setStatus('Falta configurar o LiveKit (Token server ID em config.js).', true); return; }
-  if (room) { try { await room.disconnect(); } catch (e) {} room = null; publication = null; }
+  if (room) { try { await room.disconnect(); } catch (e) {} room = null; publication = null; originalPub = null; }
   roomConnecting = true;
   try {
     const src = LK.TokenSource.developmentTokenServer(CFG.tokenServerId);
@@ -272,8 +282,8 @@ async function openChannel(force){
     r.on(LK.RoomEvent.Reconnecting, () => log('Canal: reconectando…'));
     r.on(LK.RoomEvent.Reconnected, () => log('Canal: reconectado.'));
     r.on(LK.RoomEvent.Disconnected, () => {
-      log('Canal desconectado.'); if (room === r) { room = null; publication = null; }
-      roomRetry = setTimeout(async () => { await openChannel(); if (running) publishTranslation(); }, 3000);
+      log('Canal desconectado.'); if (room === r) { room = null; publication = null; originalPub = null; }
+      roomRetry = setTimeout(async () => { await openChannel(); if (running) { publishTranslation(); publishOriginal(); } }, 3000);
     });
     await r.connect(serverUrl, participantToken, { autoSubscribe: false });
     room = r; listeners();
@@ -473,6 +483,7 @@ async function start(){
   $('start').disabled = true; setStatus('Preparando o áudio…');
   try {
     const track = await getSource();
+    originalTrack = track; publishOriginal();
     setStatus('Conectando à tradução…');
     translatedEl = new Audio(); translatedEl.autoplay = true; translatedEl.volume = +$('transVol').value;
     costB = 0;
@@ -502,7 +513,7 @@ function stop(){
   if (!running) return;
   running = false; live = false; clearInterval(tick);
   broadcast({ t:'end' });
-  unpublishTranslation();
+  unpublishTranslation(); unpublishOriginal(); originalTrack = null;
   translatedStream = null; cleanup();
   $('state').classList.remove('on'); $('stateText').textContent = 'Desligada';
   $('start').disabled = false; $('stop').disabled = true;
