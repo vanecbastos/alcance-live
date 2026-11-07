@@ -408,7 +408,8 @@ async function openSession(track, key){
 function addEn(d){ fullEn = joinDelta2(fullEn, d); enText = joinDelta(enText, d); $('outText').textContent = enText; $('outText').scrollTop = 1e9; broadcast({ t:'d', k:'en', d }); }
 function addPt(d){ fullPt = joinDelta2(fullPt, d); ptText = joinDelta(ptText, d); $('srcText').textContent = ptText; $('srcText').scrollTop = 1e9; broadcast({ t:'d', k:'pt', d }); }
 function respond(s){
-  if (s.active) { s.pending = true; return; }
+  // Só pede a próxima frase quando a anterior terminou de ser gerada E de tocar; senão a voz é cortada.
+  if (s.active || s.playing) { s.pending = true; return; }
   s.active = true; s.pending = false; s.sentAt = performance.now(); s.firstOut = false;
   clearTimeout(s.watchdog);
   // Se a resposta travar (erro no meio, sem response.done), libera a fila depois de 20 s.
@@ -416,7 +417,8 @@ function respond(s){
   try { s.dc.send(JSON.stringify({ type:'response.create' })); } catch (e) { s.active = false; }
 }
 function prune(s){
-  while (s.items.length > 6) { const id = s.items.shift(); try { s.dc.send(JSON.stringify({ type:'conversation.item.delete', item_id: id })); } catch (e) {} }
+  if (s.playing) return;
+  while (s.items.length > 8) { const id = s.items.shift(); try { s.dc.send(JSON.stringify({ type:'conversation.item.delete', item_id: id })); } catch (e) {} }
 }
 function handleEvent(s, e){
   if (s !== session && !(session && session.next === s)) return;
@@ -464,12 +466,21 @@ function handleEvent(s, e){
       if (!s.firstOut && s.sentAt) { s.firstOut = true; s.lat = (s.lat || []).concat((performance.now() - s.sentAt) / 1000).slice(-20); }
       addEn(e.delta); break;
     case 'response.output_audio_transcript.done': addEn(' '); break;
+    case 'output_audio_buffer.started':
+      s.playing = true; clearTimeout(s.playWatch);
+      s.playWatch = setTimeout(() => { if (s.playing) { s.playing = false; prune(s); if (s.pending && !s.active) respond(s); } }, 90000);
+      break;
+    case 'output_audio_buffer.stopped': case 'output_audio_buffer.cleared':
+      s.playing = false; clearTimeout(s.playWatch); prune(s);
+      if (s.pending && !s.active) respond(s);
+      break;
     case 'response.done':
       clearTimeout(s.watchdog);
       s.active = false; addUsage(e.response && e.response.usage); prune(s);
+      if (e.response && e.response.status && e.response.status !== 'completed') log('Resposta ' + e.response.status + (e.response.status_details ? ': ' + JSON.stringify(e.response.status_details).slice(0,160) : ''));
       s.count = (s.count || 0) + 1;
       if (s.count % 10 === 0 && s.lat) log('Voz fixa: ' + s.count + ' trechos; resposta média ' + (s.lat.reduce((a, b) => a + b, 0) / s.lat.length).toFixed(1) + ' s');
-      if (s.pending) respond(s);
+      if (s.pending && !s.playing) respond(s);
       break;
   }
 }
