@@ -111,6 +111,18 @@ details summary{cursor:pointer;color:var(--muted);font-size:13px}
     </section>
 
     <section class="card">
+      <h2>Gravação da pregação</h2>
+      <label style="display:flex;gap:8px;align-items:center;color:var(--ink);margin:0"><input type="checkbox" id="recOn" checked> Gravar enquanto a transmissão estiver no ar</label>
+      <p class="note" id="recState">Nada gravado ainda.</p>
+      <div class="actions" style="margin-top:6px">
+        <button class="secondary" id="dlEn" disabled>Baixar áudio em inglês</button>
+        <button class="secondary" id="dlOrig" disabled>Baixar áudio original</button>
+        <button class="secondary" id="dlTxt" disabled>Baixar texto (PT + EN)</button>
+      </div>
+      <p class="note">Os arquivos ficam só neste computador. <b>Baixe antes de fechar ou recarregar a página.</b> Use apenas com a autorização do pastor.</p>
+    </section>
+
+    <section class="card">
       <h2>Texto ao vivo</h2>
       <div class="row">
         <div><label>Português (original)</label><div id="srcText" class="tbox"></div></div>
@@ -391,8 +403,8 @@ async function openSession(track, key){
   await s.pc.setRemoteDescription({ type:'answer', sdp: await r.text() });
   return s;
 }
-function addEn(d){ enText = joinDelta(enText, d); $('outText').textContent = enText; $('outText').scrollTop = 1e9; broadcast({ t:'d', k:'en', d }); }
-function addPt(d){ ptText = joinDelta(ptText, d); $('srcText').textContent = ptText; $('srcText').scrollTop = 1e9; broadcast({ t:'d', k:'pt', d }); }
+function addEn(d){ fullEn = joinDelta2(fullEn, d); enText = joinDelta(enText, d); $('outText').textContent = enText; $('outText').scrollTop = 1e9; broadcast({ t:'d', k:'en', d }); }
+function addPt(d){ fullPt = joinDelta2(fullPt, d); ptText = joinDelta(ptText, d); $('srcText').textContent = ptText; $('srcText').scrollTop = 1e9; broadcast({ t:'d', k:'pt', d }); }
 function respond(s){
   if (s.active) { s.pending = true; return; }
   s.active = true; s.pending = false; s.sentAt = performance.now(); s.firstOut = false;
@@ -451,9 +463,56 @@ function handleEvent(s, e){
       break;
   }
 }
+/* ---------- Gravação ---------- */
+let fullEn = '', fullPt = '', rec = null, recStartedAt = null;
+function joinDelta2(text, d){ const t = joinDelta(text + '', d); return t.length < text.length ? text + d : t; }
+function pickMime(){ for (const m of ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; return ''; }
+function startRecording(){
+  if (!$('recOn').checked || !window.MediaRecorder) return;
+  const mime = pickMime();
+  const ac = new (window.AudioContext || window.webkitAudioContext)();
+  const dest = ac.createMediaStreamDestination();
+  rec = { ac, dest, mime, enChunks: [], origChunks: [], enSrc: null, en: null, orig: null };
+  try { rec.en = new MediaRecorder(dest.stream, mime ? { mimeType: mime } : undefined); rec.en.ondataavailable = e => { if (e.data.size) rec.en && rec.enChunks.push(e.data); }; rec.en.start(5000); } catch (e) { log('Gravação do inglês indisponível: ' + e.message); }
+  if (originalTrack) { try { rec.orig = new MediaRecorder(new MediaStream([originalTrack]), mime ? { mimeType: mime } : undefined); rec.orig.ondataavailable = e => { if (e.data.size) rec.origChunks.push(e.data); }; rec.orig.start(5000); } catch (e) { log('Gravação do original indisponível: ' + e.message); } }
+  recStartedAt = new Date(); fullEn = ''; fullPt = '';
+  ['dlEn','dlOrig','dlTxt'].forEach(id => $(id).disabled = true);
+  $('recState').textContent = 'Gravando…';
+  if (translatedStream) recFeed(translatedStream);
+}
+function recFeed(stream){
+  if (!rec) return;
+  try { rec.enSrc && rec.enSrc.disconnect(); } catch (e) {}
+  try { rec.enSrc = rec.ac.createMediaStreamSource(stream); rec.enSrc.connect(rec.dest); } catch (e) { log('Gravação: ' + e.message); }
+}
+function stopRecording(){
+  if (!rec) return;
+  const r = rec;
+  for (const m of [r.en, r.orig]) if (m && m.state !== 'inactive') try { m.stop(); } catch (e) {}
+  setTimeout(() => {
+    try { r.ac.close(); } catch (e) {}
+    $('dlEn').disabled = !r.enChunks.length; $('dlOrig').disabled = !r.origChunks.length; $('dlTxt').disabled = !(fullEn || fullPt);
+    const mins = recStartedAt ? Math.round((Date.now() - recStartedAt) / 60000) : 0;
+    $('recState').textContent = 'Gravação pronta (' + mins + ' min). Baixe os arquivos abaixo.';
+  }, 800);
+}
+function stamp(){ const d = recStartedAt || new Date(); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); }
+function saveBlob(name, blob){ const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); }
+function ext(){ return rec && rec.mime.includes('mp4') ? 'm4a' : 'webm'; }
+$('dlEn').onclick = () => rec && saveBlob('alcance-' + stamp() + '-ingles.' + ext(), new Blob(rec.enChunks, { type: rec.mime || 'audio/webm' }));
+$('dlOrig').onclick = () => rec && saveBlob('alcance-' + stamp() + '-original.' + ext(), new Blob(rec.origChunks, { type: rec.mime || 'audio/webm' }));
+$('dlTxt').onclick = () => {
+  const d = recStartedAt || new Date();
+  const txt = ['ALCANCE MYRTLE BEACH — ' + d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' }),
+    'Tradução automática por IA. Pode conter erros.', '',
+    '=== ENGLISH (AI translation) ===', fullEn.trim(), '',
+    '=== PORTUGUÊS (original) ===', fullPt.trim(), ''].join('\n');
+  saveBlob('alcance-' + stamp() + '-texto.txt', new Blob([txt], { type:'text/plain;charset=utf-8' }));
+};
+
 async function swapTo(s){
   const stream = await s.gotTrack;
-  translatedStream = stream; translatedEl.srcObject = stream;
+  translatedStream = stream; translatedEl.srcObject = stream; recFeed(stream);
   const newTrack = stream.getAudioTracks()[0];
   if (publication && publication.track && newTrack) { try { await publication.track.replaceTrack(newTrack); log('Áudio trocado para a sessão nova.'); } catch (e) { log('Troca de áudio falhou: ' + e.message); await unpublishTranslation(); publishTranslation(); } }
   else publishTranslation();
@@ -504,7 +563,7 @@ async function start(){
   $('start').disabled = true; setStatus('Preparando o áudio…');
   try {
     const track = await getSource();
-    originalTrack = track; publishOriginal();
+    originalTrack = track; publishOriginal(); startRecording();
     setStatus('Conectando à tradução…');
     translatedEl = new Audio(); translatedEl.autoplay = true; translatedEl.volume = +$('transVol').value;
     costB = 0;
@@ -534,7 +593,7 @@ function stop(){
   if (!running) return;
   running = false; live = false; clearInterval(tick);
   broadcast({ t:'end' });
-  unpublishTranslation(); unpublishOriginal(); originalTrack = null;
+  stopRecording(); unpublishTranslation(); unpublishOriginal(); originalTrack = null;
   translatedStream = null; cleanup();
   $('state').classList.remove('on'); $('stateText').textContent = 'Desligada';
   $('start').disabled = false; $('stop').disabled = true;
@@ -542,7 +601,7 @@ function stop(){
 }
 $('start').onclick = start;
 $('stop').onclick = stop;
-window.addEventListener('beforeunload', e => { if (running) { e.preventDefault(); e.returnValue = ''; } });
+window.addEventListener('beforeunload', e => { if (running || (rec && !$('dlEn').disabled)) { e.preventDefault(); e.returnValue = ''; } });
 </script>
 </body>
 </html>
