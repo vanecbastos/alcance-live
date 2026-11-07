@@ -339,18 +339,23 @@ async function getClientSecret(apiKey, mode){
     return { secret: secretOf(r.text), url: 'https://api.openai.com/v1/realtime/translations/calls' };
   }
   let last = '';
-  for (const model of ['gpt-realtime-2.1', 'gpt-realtime-2']) {
+  const turnOptions = [
+    { type:'semantic_vad', eagerness:'high', create_response:false, interrupt_response:false },
+    { type:'server_vad', threshold:0.5, prefix_padding_ms:300, silence_duration_ms:400, create_response:false, interrupt_response:false }
+  ];
+  for (const td of turnOptions) for (const model of ['gpt-realtime-2.1', 'gpt-realtime-2']) {
     const r = await postJson('https://api.openai.com/v1/realtime/client_secrets', apiKey, {
       expires_after:{ anchor:'created_at', seconds:600 },
       session:{ type:'realtime', model, instructions: instructions(), output_modalities:['audio'],
         audio:{
           input:{ transcription:{ model:'whisper-1', language:'pt' },
-                  turn_detection:{ type:'server_vad', threshold:0.5, prefix_padding_ms:300, silence_duration_ms:550, create_response:false, interrupt_response:false } },
+                  turn_detection: td },
           output:{ voice: $('voiceSel').value }
         } }
     });
-    if (r.ok) { log('Motor B: modelo ' + model + ', voz ' + $('voiceSel').value); return { secret: secretOf(r.text), url: 'https://api.openai.com/v1/realtime/calls' }; }
+    if (r.ok) { log('Motor B: modelo ' + model + ', voz ' + $('voiceSel').value + ', turnos ' + td.type); return { secret: secretOf(r.text), url: 'https://api.openai.com/v1/realtime/calls' }; }
     last = '(' + r.status + ') ' + r.text.slice(0,200); log('Motor B recusou ' + model + ': ' + last);
+    if (r.status === 401 || r.status === 429) break;
   }
   throw new Error('A OpenAI recusou o Motor B ' + last);
 }
@@ -390,7 +395,10 @@ function addEn(d){ enText = joinDelta(enText, d); $('outText').textContent = enT
 function addPt(d){ ptText = joinDelta(ptText, d); $('srcText').textContent = ptText; $('srcText').scrollTop = 1e9; broadcast({ t:'d', k:'pt', d }); }
 function respond(s){
   if (s.active) { s.pending = true; return; }
-  s.active = true; s.pending = false;
+  s.active = true; s.pending = false; s.sentAt = performance.now(); s.firstOut = false;
+  clearTimeout(s.watchdog);
+  // Se a resposta travar (erro no meio, sem response.done), libera a fila depois de 20 s.
+  s.watchdog = setTimeout(() => { if (s.active) { log('Resposta travada; liberando a fila.'); s.active = false; if (s.pending) respond(s); } }, 20000);
   try { s.dc.send(JSON.stringify({ type:'response.create' })); } catch (e) { s.active = false; }
 }
 function prune(s){
@@ -418,14 +426,27 @@ function handleEvent(s, e){
       const t = (e.transcript || '').trim();
       if (!s.ptByItem[e.item_id] && t) addPt(t + ' ');
       else addPt(' ');
-      if (t.split(/\s+/).filter(w => /[a-zA-ZÀ-ú]/.test(w)).length >= 2) respond(s);
+      break;
+    }
+    case 'input_audio_buffer.speech_started': s.speechStart = e.audio_start_ms; break;
+    case 'input_audio_buffer.speech_stopped': s.speechEnd = e.audio_end_ms; break;
+    case 'input_audio_buffer.committed': {
+      // Traduz assim que o trecho fecha (sem esperar a transcrição); ignora estalos curtos.
+      const dur = (s.speechEnd != null && s.speechStart != null) ? s.speechEnd - s.speechStart : null;
+      s.speechStart = s.speechEnd = null;
+      if (dur == null || dur >= 600) respond(s);
       break;
     }
     case 'response.created': s.active = true; break;
-    case 'response.output_audio_transcript.delta': addEn(e.delta); break;
+    case 'response.output_audio_transcript.delta':
+      if (!s.firstOut && s.sentAt) { s.firstOut = true; s.lat = (s.lat || []).concat((performance.now() - s.sentAt) / 1000).slice(-20); }
+      addEn(e.delta); break;
     case 'response.output_audio_transcript.done': addEn(' '); break;
     case 'response.done':
+      clearTimeout(s.watchdog);
       s.active = false; addUsage(e.response && e.response.usage); prune(s);
+      s.count = (s.count || 0) + 1;
+      if (s.count % 10 === 0 && s.lat) log('Voz fixa: ' + s.count + ' trechos; resposta média ' + (s.lat.reduce((a, b) => a + b, 0) / s.lat.length).toFixed(1) + ' s');
       if (s.pending) respond(s);
       break;
   }
