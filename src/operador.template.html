@@ -407,9 +407,24 @@ async function openSession(track, key){
 }
 function addEn(d){ fullEn = joinDelta2(fullEn, d); enText = joinDelta(enText, d); $('outText').textContent = enText; $('outText').scrollTop = 1e9; broadcast({ t:'d', k:'en', d }); }
 function addPt(d){ fullPt = joinDelta2(fullPt, d); ptText = joinDelta(ptText, d); $('srcText').textContent = ptText; $('srcText').scrollTop = 1e9; broadcast({ t:'d', k:'pt', d }); }
+// Mede localmente se a voz em inglês ainda está tocando (mais confiável que eventos do servidor).
+let playMeter = null;
+function startPlayMeter(stream){
+  try {
+    if (playMeter) { clearInterval(playMeter.iv); playMeter.ac.close(); }
+    const ac = new (window.AudioContext || window.webkitAudioContext)(); const an = ac.createAnalyser(); an.fftSize = 1024;
+    ac.createMediaStreamSource(stream).connect(an); const buf = new Float32Array(an.fftSize);
+    playMeter = { ac, an, lastLoud: 0, iv: setInterval(() => {
+      an.getFloatTimeDomainData(buf); let q = 0; for (const v of buf) q += v*v;
+      if (Math.sqrt(q / buf.length) > 0.01) playMeter.lastLoud = performance.now();
+      const s = session; if (s && s.mode === 'B' && s.pending && !s.active && !isPlaying()) respond(s);
+    }, 150) };
+  } catch (e) { log('Medidor de voz indisponível: ' + e.message); }
+}
+function isPlaying(){ return !!playMeter && performance.now() - playMeter.lastLoud < 700; }
 function respond(s){
-  // Só pede a próxima frase quando a anterior terminou de ser gerada E de tocar; senão a voz é cortada.
-  if (s.active || s.playing) { s.pending = true; return; }
+  // Só pede a próxima frase quando a anterior terminou de ser gerada e de tocar; senão a voz é cortada.
+  if (s.active || (s.mode === 'B' && isPlaying())) { s.pending = true; return; }
   s.active = true; s.pending = false; s.sentAt = performance.now(); s.firstOut = false;
   clearTimeout(s.watchdog);
   // Se a resposta travar (erro no meio, sem response.done), libera a fila depois de 20 s.
@@ -417,7 +432,7 @@ function respond(s){
   try { s.dc.send(JSON.stringify({ type:'response.create' })); } catch (e) { s.active = false; }
 }
 function prune(s){
-  if (s.playing) return;
+  if (isPlaying()) return;
   while (s.items.length > 8) { const id = s.items.shift(); try { s.dc.send(JSON.stringify({ type:'conversation.item.delete', item_id: id })); } catch (e) {} }
 }
 function handleEvent(s, e){
@@ -461,26 +476,18 @@ function handleEvent(s, e){
       if (dur == null || dur >= 600) respond(s);
       break;
     }
-    case 'response.created': s.active = true; break;
+    case 'response.created': s.active = true; if (!s.loggedFirst) { s.loggedFirst = true; log('Voz fixa: primeira resposta iniciada.'); } break;
     case 'response.output_audio_transcript.delta':
       if (!s.firstOut && s.sentAt) { s.firstOut = true; s.lat = (s.lat || []).concat((performance.now() - s.sentAt) / 1000).slice(-20); }
       addEn(e.delta); break;
     case 'response.output_audio_transcript.done': addEn(' '); break;
-    case 'output_audio_buffer.started':
-      s.playing = true; clearTimeout(s.playWatch);
-      s.playWatch = setTimeout(() => { if (s.playing) { s.playing = false; prune(s); if (s.pending && !s.active) respond(s); } }, 90000);
-      break;
-    case 'output_audio_buffer.stopped': case 'output_audio_buffer.cleared':
-      s.playing = false; clearTimeout(s.playWatch); prune(s);
-      if (s.pending && !s.active) respond(s);
-      break;
     case 'response.done':
       clearTimeout(s.watchdog);
       s.active = false; addUsage(e.response && e.response.usage); prune(s);
       if (e.response && e.response.status && e.response.status !== 'completed') log('Resposta ' + e.response.status + (e.response.status_details ? ': ' + JSON.stringify(e.response.status_details).slice(0,160) : ''));
       s.count = (s.count || 0) + 1;
       if (s.count % 10 === 0 && s.lat) log('Voz fixa: ' + s.count + ' trechos; resposta média ' + (s.lat.reduce((a, b) => a + b, 0) / s.lat.length).toFixed(1) + ' s');
-      if (s.pending && !s.playing) respond(s);
+      if (s.pending && !isPlaying()) respond(s);
       break;
   }
 }
@@ -533,7 +540,7 @@ $('dlTxt').onclick = () => {
 
 async function swapTo(s){
   const stream = await s.gotTrack;
-  translatedStream = stream; translatedEl.srcObject = stream; recFeed(stream);
+  translatedStream = stream; translatedEl.srcObject = stream; recFeed(stream); startPlayMeter(stream);
   const newTrack = stream.getAudioTracks()[0];
   if (publication && publication.track && newTrack) { try { await publication.track.replaceTrack(newTrack); log('Áudio trocado para a sessão nova.'); } catch (e) { log('Troca de áudio falhou: ' + e.message); await unpublishTranslation(); publishTranslation(); } }
   else publishTranslation();
