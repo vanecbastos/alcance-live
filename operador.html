@@ -74,8 +74,20 @@ details summary{cursor:pointer;color:var(--muted);font-size:13px}
     <section class="card">
       <h2>Voz da tradução</h2>
       <div class="radios" style="flex-direction:column;gap:8px">
-        <label><input type="radio" name="engine" value="B" checked> <span><b>Voz fixa</b> (Motor B): sempre a mesma voz, segue o glossário da igreja. Custo maior, cerca de US$ 5 a 8 por hora (estimativa).</span></label>
+        <label><input type="radio" name="engine" value="B"> <span><b>Voz fixa</b> (Motor B): sempre a mesma voz, segue o glossário da igreja. Custo maior, cerca de US$ 5 a 8 por hora (estimativa).</span></label>
         <label><input type="radio" name="engine" value="A"> <span><b>Voz automática</b> (Motor A): imita a voz de quem fala. Cerca de US$ 3 por hora.</span></label>
+        <label><input type="radio" name="engine" value="C" checked> <span><b>Automática + voz fixa</b> (Motor C): tradução do Motor A lida sempre pela mesma voz. Cerca de US$ 4 por hora. <b>Recomendado.</b></span></label>
+      </div>
+      <div id="ttsRow" hidden>
+        <label for="ttsVoice">Voz (Motor C)</label>
+        <select id="ttsVoice" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit">
+          <option value="coral">Coral · feminina</option>
+          <option value="nova">Nova · feminina</option>
+          <option value="shimmer">Shimmer · feminina</option>
+          <option value="onyx">Onyx · masculina</option>
+          <option value="ash">Ash · masculina</option>
+          <option value="echo">Echo · masculina</option>
+        </select>
       </div>
       <div id="voiceRow">
         <label for="voiceSel">Voz fixa</label>
@@ -182,8 +194,10 @@ function setStatus(m, err){ $('status').textContent = m; $('status').className =
 function srcMode(){ return document.querySelector('input[name=src]:checked').value; }
 function syncSrc(){ $('tabHelp').hidden = srcMode() !== 'tab'; $('micHelp').hidden = srcMode() !== 'mic'; store.set('src', srcMode()); }
 document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => { syncSrc(); if (srcMode() === 'mic') listMics(false);
-function syncEngine(){ $('voiceRow').hidden = engineMode() !== 'B'; store.set('engine', engineMode()); }
-if (store.get('engine') === 'A') document.querySelector('input[name=engine][value=A]').checked = true;
+function syncEngine(){ $('voiceRow').hidden = engineMode() !== 'B'; $('ttsRow').hidden = engineMode() !== 'C'; store.set('engine', engineMode()); }
+{ const eg = store.get('engine'); if (eg === 'A' || eg === 'B' || eg === 'C') document.querySelector('input[name=engine][value=' + eg + ']').checked = true; }
+if (store.get('tts')) $('ttsVoice').value = store.get('tts');
+$('ttsVoice').onchange = () => store.set('tts', $('ttsVoice').value);
 if (store.get('voice')) $('voiceSel').value = store.get('voice');
 document.querySelectorAll('input[name=engine]').forEach(r => r.onchange = syncEngine);
 $('voiceSel').onchange = () => store.set('voice', $('voiceSel').value);
@@ -217,7 +231,7 @@ $('testMic').onclick = async () => {
 $('micSel').onchange = () => store.set('mic', $('micSel').value);
 if (store.get('src') === 'mic') { document.querySelector('input[name=src][value=mic]').checked = true; }
 syncSrc(); if (srcMode() === 'mic') listMics(false);
-function syncEngine(){ $('voiceRow').hidden = engineMode() !== 'B'; store.set('engine', engineMode()); }
+function syncEngine(){ $('voiceRow').hidden = engineMode() !== 'B'; $('ttsRow').hidden = engineMode() !== 'C'; store.set('engine', engineMode()); }
 if (store.get('engine') === 'A') document.querySelector('input[name=engine][value=A]').checked = true;
 if (store.get('voice')) $('voiceSel').value = store.get('voice');
 document.querySelectorAll('input[name=engine]').forEach(r => r.onchange = syncEngine);
@@ -378,6 +392,7 @@ async function getClientSecret(apiKey, mode){
 let costB = 0;
 function costNow(secs){
   if (engineMode() === 'A') return secs / 60 * (0.034 + 0.017);
+  if (engineMode() === 'C') return secs / 60 * (0.034 + 0.017) + ttsCost;
   return costB + secs / 60 * 0.006;
 }
 function addUsage(u){
@@ -392,7 +407,7 @@ function addUsage(u){
 let session = null, renewTimer = null;
 async function openSession(track, key){
   const mode = engineMode();
-  const { secret, url } = await getClientSecret(key, mode);
+  const { secret, url } = await getClientSecret(key, mode === 'C' ? 'A' : mode);
   const s = { mode, pc: new RTCPeerConnection(), dc: null, active: false, pending: false, items: [], ptByItem: {} };
   s.pc.addTrack(track, new MediaStream([track]));
   s.pc.onconnectionstatechange = () => { log('Tradução: ' + s.pc.connectionState); if (s === session && s.pc.connectionState === 'failed') renewSession('queda de conexão'); };
@@ -443,8 +458,8 @@ function handleEvent(s, e){
     if (code === 'item_delete_invalid_item_id' || code === 'input_audio_buffer_commit_empty') return;
     log('ERRO: ' + JSON.stringify(e.error || e)); setStatus('Erro da tradução: ' + ((e.error && e.error.message) || 'ver registro'), true); return;
   }
-  if (s.mode === 'A') {
-    if (e.type === 'session.output_transcript.delta') addEn(e.delta);
+  if (s.mode === 'A' || s.mode === 'C') {
+    if (e.type === 'session.output_transcript.delta') { addEn(e.delta); if (s.mode === 'C') ttsFeed(e.delta); }
     else if (e.type === 'session.input_transcript.delta') addPt(e.delta);
     return;
   }
@@ -538,7 +553,59 @@ $('dlTxt').onclick = () => {
   saveBlob('alcance-' + stamp() + '-texto.txt', new Blob([txt], { type:'text/plain;charset=utf-8' }));
 };
 
+/* ---------- Motor C: texto do Motor A lido por uma voz fixa (OpenAI TTS) ---------- */
+let tts = null, ttsCost = 0;
+function ttsStart(){
+  const ac = new (window.AudioContext || window.webkitAudioContext)();
+  const dest = ac.createMediaStreamDestination();
+  tts = { ac, dest, buf: '', timer: null, chain: Promise.resolve(), next: 0, voice: $('ttsVoice').value, fails: 0 };
+  return dest.stream;
+}
+function ttsStop(){ if (!tts) return; clearTimeout(tts.timer); try { tts.ac.close(); } catch (e) {} tts = null; }
+function ttsFeed(d){
+  if (!tts) return;
+  tts.buf += d || '';
+  clearTimeout(tts.timer);
+  // Corta em fim de frase; frases longas, numa vírgula depois de ~14 palavras; sem texto novo por 1,2 s, fala o que tem.
+  let m;
+  while ((m = tts.buf.match(/^([\s\S]*?[.!?…]["”’)]?)(\s+|$)/)) && m[1].trim().split(/\s+/).length >= 2) { ttsSay(m[1]); tts.buf = tts.buf.slice(m[0].length); if (!m[2]) break; }
+  const words = tts.buf.trim().split(/\s+/);
+  if (words.length >= 14) { const i = tts.buf.lastIndexOf(','); if (i > 20) { ttsSay(tts.buf.slice(0, i + 1)); tts.buf = tts.buf.slice(i + 1); } }
+  tts.timer = setTimeout(() => { if (tts && tts.buf.trim()) { ttsSay(tts.buf); tts.buf = ''; } }, 1200);
+}
+function ttsSay(text){
+  text = text.trim(); if (!text || !tts) return;
+  const t = tts, key = store.get('key');
+  const audioP = (async () => {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        const r = await fetch('https://api.openai.com/v1/audio/speech', { method:'POST', headers:{ Authorization:`Bearer ${key}`, 'Content-Type':'application/json' },
+          body: JSON.stringify({ model:'gpt-4o-mini-tts', voice: t.voice, input: text, response_format:'wav',
+            instructions:'You are the voice of a live church interpreter. Speak naturally and clearly at a steady, slightly brisk pace, with warmth, following the emotion of the words.' }) });
+        if (!r.ok) { const body = (await r.text()).slice(0, 160); log('Voz fixa (C) recusada (' + r.status + '): ' + body); if (r.status === 400 && t.voice !== 'coral') { t.voice = 'coral'; continue; } return null; }
+        ttsCost += text.length * 0.6e-6 + (text.split(/\s+/).length / 2.5) * 50 * 12e-6;
+        return await t.ac.decodeAudioData(await r.arrayBuffer());
+      } catch (e) { log('Voz fixa (C): ' + e.message); }
+    }
+    return null;
+  })();
+  t.chain = t.chain.then(async () => {
+    const buf = await audioP; if (!buf || tts !== t) return;
+    const src = t.ac.createBufferSource(); src.buffer = buf;
+    const backlog = Math.max(0, t.next - t.ac.currentTime);
+    src.playbackRate.value = backlog > 8 ? 1.15 : backlog > 4 ? 1.07 : 1;
+    src.connect(t.dest);
+    const at = Math.max(t.ac.currentTime + 0.05, t.next);
+    src.start(at); t.next = at + buf.duration / src.playbackRate.value;
+  });
+}
+
 async function swapTo(s){
+  if (s.mode === 'C') {
+    if (!tts) { const st = ttsStart(); translatedStream = st; recFeed(st); try { await tts.ac.resume(); } catch (e) {} publishTranslation(); }
+    else if (!publication) publishTranslation();
+    return;
+  }
   const stream = await s.gotTrack;
   translatedStream = stream; translatedEl.srcObject = stream; recFeed(stream); startPlayMeter(stream);
   const newTrack = stream.getAudioTracks()[0];
@@ -594,17 +661,17 @@ async function start(){
     originalTrack = track; publishOriginal(); startRecording();
     setStatus('Conectando à tradução…');
     translatedEl = new Audio(); translatedEl.autoplay = true; translatedEl.volume = +$('transVol').value;
-    costB = 0;
+    costB = 0; ttsCost = 0; ttsStop();
     session = await openSession(track, key);
     swapTo(session);
     if (ctx.state === 'suspended') await ctx.resume();
     running = true; live = true; startedAt = performance.now(); enText = ''; ptText = '';
     broadcast({ t:'live' });
     $('state').classList.add('on'); $('stateText').textContent = 'No ar';
-    $('stop').disabled = false; document.querySelectorAll('input[name=engine]').forEach(r => r.disabled = true); $('voiceSel').disabled = true;
+    $('stop').disabled = false; document.querySelectorAll('input[name=engine]').forEach(r => r.disabled = true); $('voiceSel').disabled = true; $('ttsVoice').disabled = true;
     clearTimeout(renewTimer); renewTimer = setTimeout(() => renewSession('50 minutos'), 50 * 60 * 1000);
     tick = setInterval(() => { const sec = (performance.now() - startedAt) / 1000; $('mTime').textContent = Math.floor(sec/60) + ':' + String(Math.floor(sec%60)).padStart(2,'0'); $('mCost').textContent = 'US$ ' + costNow(sec).toFixed(2).replace('.', ','); }, 1000);
-    setStatus('No ar' + (engineMode() === 'B' ? ' (voz fixa)' : '') + '. Os celulares que escanearem o QR Code já recebem a tradução.');
+    setStatus('No ar' + (engineMode() === 'B' ? ' (voz fixa)' : engineMode() === 'C' ? ' (automática + voz fixa)' : '') + '. Os celulares que escanearem o QR Code já recebem a tradução.');
   } catch (e) {
     log(String(e)); setStatus(e.message || String(e), true); cleanup(); $('start').disabled = false;
   }
@@ -612,7 +679,7 @@ async function start(){
 function cleanup(){
   try { session && session.pc.close(); } catch (e) {}
   session = null; clearTimeout(renewTimer);
-  document.querySelectorAll('input[name=engine]').forEach(r => r.disabled = false); $('voiceSel').disabled = false;
+  document.querySelectorAll('input[name=engine]').forEach(r => r.disabled = false); $('voiceSel').disabled = false; $('ttsVoice').disabled = false;
   try { srcStream && srcStream.getTracks().forEach(t => t.stop()); } catch (e) {}
   try { ctx && ctx.close(); } catch (e) {}
   srcStream = null; ctx = null; monitorGain = null; meterAn = null; clearInterval(meterTick); $('meter').style.width = '0';
@@ -621,7 +688,7 @@ function stop(){
   if (!running) return;
   running = false; live = false; clearInterval(tick);
   broadcast({ t:'end' });
-  stopRecording(); unpublishTranslation(); unpublishOriginal(); originalTrack = null;
+  stopRecording(); unpublishTranslation(); unpublishOriginal(); originalTrack = null; ttsStop();
   translatedStream = null; cleanup();
   $('state').classList.remove('on'); $('stateText').textContent = 'Desligada';
   $('start').disabled = false; $('stop').disabled = true;
