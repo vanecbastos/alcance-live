@@ -423,7 +423,7 @@ function handleEvent(s, e){
   if (e.type === 'error') {
     const code = e.error && e.error.code;
     if (code === 'conversation_already_has_active_response') { s.pending = true; return; }
-    if (code === 'item_delete_invalid_item_id') return;
+    if (code === 'item_delete_invalid_item_id' || code === 'input_audio_buffer_commit_empty') return;
     log('ERRO: ' + JSON.stringify(e.error || e)); setStatus('Erro da tradução: ' + ((e.error && e.error.message) || 'ver registro'), true); return;
   }
   if (s.mode === 'A') {
@@ -442,9 +442,17 @@ function handleEvent(s, e){
       else addPt(' ');
       break;
     }
-    case 'input_audio_buffer.speech_started': s.speechStart = e.audio_start_ms; break;
-    case 'input_audio_buffer.speech_stopped': s.speechEnd = e.audio_end_ms; break;
+    case 'input_audio_buffer.speech_started':
+      s.speechStart = e.audio_start_ms; clearTimeout(s.maxSeg);
+      // Com ruído de fundo, o fim da frase pode não ser detectado: força o fechamento após 7 s.
+      s.maxSeg = setTimeout(() => {
+        if (s.speechStart == null) return;
+        try { s.dc.send(JSON.stringify({ type:'input_audio_buffer.commit' })); s.forced = (s.forced || 0) + 1; if (s.forced % 5 === 1) log('Frase longa: tradução forçada (' + s.forced + 'x).'); } catch (e) {}
+      }, 7000);
+      break;
+    case 'input_audio_buffer.speech_stopped': s.speechEnd = e.audio_end_ms; clearTimeout(s.maxSeg); break;
     case 'input_audio_buffer.committed': {
+      clearTimeout(s.maxSeg);
       // Traduz assim que o trecho fecha (sem esperar a transcrição); ignora estalos curtos.
       const dur = (s.speechEnd != null && s.speechStart != null) ? s.speechEnd - s.speechStart : null;
       s.speechStart = s.speechEnd = null;
