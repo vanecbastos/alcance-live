@@ -144,6 +144,7 @@ button:focus-visible{outline:2px solid var(--candle);outline-offset:3px}
 </div>
 
 <script src="config.js"></script>
+<script src="names.js"></script>
 <script src="vendor/livekit-client.umd.js"></script>
 <script>
 const $ = id => document.getElementById(id);
@@ -167,7 +168,7 @@ function setStatus(t, ok){ $('status').textContent = t; $('status').classList.to
 function liveNow(){ setLive(true, 'Live now'); setStatus('Live · a few seconds behind the pastor', true); }
 function render(){
   if (paused) return;
-  $('enPane').textContent = enText; $('ptPane').textContent = ptText;
+  $('enPane').textContent = window.AlcanceNames ? AlcanceNames.fixNames(enText) : enText; $('ptPane').textContent = ptText;
   $('enPane').scrollTop = $('enPane').scrollHeight; $('ptPane').scrollTop = $('ptPane').scrollHeight;
 }
 function joinDelta(text, d){

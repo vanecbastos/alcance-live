@@ -190,6 +190,7 @@ details summary{cursor:pointer;color:var(--muted);font-size:13px}
 </main>
 
 <script src="config.js"></script>
+<script src="names.js"></script>
 <script src="vendor/livekit-client.umd.js"></script>
 <script src="vendor/qrcode.js"></script>
 <script>
@@ -437,7 +438,7 @@ async function openSession(track, key){
   await s.pc.setRemoteDescription({ type:'answer', sdp: await r.text() });
   return s;
 }
-function addEn(d){ lastTextAt = performance.now(); fullEn = joinDelta2(fullEn, d); enText = joinDelta(enText, d); $('outText').textContent = enText; $('outText').scrollTop = 1e9; broadcast({ t:'d', k:'en', d }); }
+function addEn(d){ lastTextAt = performance.now(); fullEn = joinDelta2(fullEn, d); enText = joinDelta(enText, d); $('outText').textContent = window.AlcanceNames ? AlcanceNames.fixNames(enText) : enText; $('outText').scrollTop = 1e9; broadcast({ t:'d', k:'en', d }); }
 function addPt(d){ fullPt = joinDelta2(fullPt, d); ptText = joinDelta(ptText, d); $('srcText').textContent = ptText; $('srcText').scrollTop = 1e9; broadcast({ t:'d', k:'pt', d }); }
 // Mede localmente se a voz em inglês ainda está tocando (mais confiável que eventos do servidor).
 let playMeter = null;
@@ -565,7 +566,7 @@ $('dlTxt').onclick = () => {
   const d = recStartedAt || new Date();
   const txt = ['ALCANCE MYRTLE BEACH — ' + d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' }),
     'Tradução automática por IA. Pode conter erros.', '',
-    '=== ENGLISH (AI translation) ===', fullEn.trim(), '',
+    '=== ENGLISH (AI translation) ===', (window.AlcanceNames ? AlcanceNames.fixNames(fullEn) : fullEn).trim(), '',
     '=== PORTUGUÊS (original) ===', fullPt.trim(), ''].join('\n');
   saveBlob('alcance-' + stamp() + '-texto.txt', new Blob([txt], { type:'text/plain;charset=utf-8' }));
 };
@@ -591,7 +592,7 @@ function ttsFeed(d){
   tts.timer = setTimeout(() => { if (tts && tts.buf.trim()) { ttsSay(tts.buf); tts.buf = ''; } }, 1200);
 }
 function ttsSay(text){
-  text = text.trim(); if (!text || !tts) return;
+  text = (window.AlcanceNames ? AlcanceNames.fixNames(text) : text).trim(); if (!text || !tts) return;
   const t = tts, key = store.get('key');
   const audioP = (async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
