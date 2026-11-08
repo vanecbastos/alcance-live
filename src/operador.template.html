@@ -211,15 +211,7 @@ function log(m){ const el = $('log'); el.textContent += new Date().toISOString()
 function setStatus(m, err){ $('status').textContent = m; $('status').className = 'status' + (err ? ' err' : ''); }
 function srcMode(){ return document.querySelector('input[name=src]:checked').value; }
 function syncSrc(){ $('tabHelp').hidden = srcMode() !== 'tab'; $('micHelp').hidden = srcMode() !== 'mic'; store.set('src', srcMode()); }
-document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => { syncSrc(); if (srcMode() === 'mic') listMics(false);
-function syncEngine(){ $('voiceRow').hidden = engineMode() !== 'B'; $('ttsRow').hidden = engineMode() !== 'C'; store.set('engine', engineMode()); }
-{ const eg = store.get('engine'); if (eg === 'A' || eg === 'B' || eg === 'C') document.querySelector('input[name=engine][value=' + eg + ']').checked = true; }
-if (store.get('tts')) $('ttsVoice').value = store.get('tts');
-$('ttsVoice').onchange = () => store.set('tts', $('ttsVoice').value);
-if (store.get('voice')) $('voiceSel').value = store.get('voice');
-document.querySelectorAll('input[name=engine]').forEach(r => r.onchange = syncEngine);
-$('voiceSel').onchange = () => store.set('voice', $('voiceSel').value);
-syncEngine(); });
+document.querySelectorAll('input[name=src]').forEach(r => r.onchange = () => { syncSrc(); if (srcMode() === 'mic') listMics(false); });
 async function listMics(ask){
   try {
     if (ask) { const s = await navigator.mediaDevices.getUserMedia({ audio:true }); s.getTracks().forEach(t => t.stop()); }
@@ -249,11 +241,24 @@ $('testMic').onclick = async () => {
 $('micSel').onchange = () => store.set('mic', $('micSel').value);
 if (store.get('src') === 'mic') { document.querySelector('input[name=src][value=mic]').checked = true; }
 syncSrc(); if (srcMode() === 'mic') listMics(false);
+function engineLabel(m){ return m === 'A' ? 'Voz automática' : m === 'B' ? 'Voz fixa (Motor B)' : 'Automática + voz fixa'; }
 function syncEngine(){ $('voiceRow').hidden = engineMode() !== 'B'; $('ttsRow').hidden = engineMode() !== 'C'; store.set('engine', engineMode()); }
-if (store.get('engine') === 'A') document.querySelector('input[name=engine][value=A]').checked = true;
+{ const eg = store.get('engine'); if (eg === 'A' || eg === 'B' || eg === 'C') document.querySelector('input[name=engine][value=' + eg + ']').checked = true; }
 if (store.get('voice')) $('voiceSel').value = store.get('voice');
-document.querySelectorAll('input[name=engine]').forEach(r => r.onchange = syncEngine);
-$('voiceSel').onchange = () => store.set('voice', $('voiceSel').value);
+if (store.get('tts')) $('ttsVoice').value = store.get('tts');
+// Trocas com a transmissão no ar: aplicadas sem encerrar (ouvintes, texto e gravação continuam).
+document.querySelectorAll('input[name=engine]').forEach(r => r.onchange = () => {
+  syncEngine();
+  if (running && !paused && session && session.mode !== engineMode()) { setStatus('Trocando para "' + engineLabel(engineMode()) + '"…'); renewSession('troca para ' + engineLabel(engineMode())); }
+});
+$('voiceSel').onchange = () => {
+  store.set('voice', $('voiceSel').value);
+  if (running && !paused && session && session.mode === 'B') { setStatus('Trocando a voz…'); renewSession('troca de voz'); }
+};
+$('ttsVoice').onchange = () => {
+  store.set('tts', $('ttsVoice').value);
+  if (tts) { tts.voice = $('ttsVoice').value; setStatus('Voz trocada. A próxima frase já sai com a voz nova.'); log('Voz (C) trocada para ' + tts.voice); }
+};
 syncEngine();
 
 /* ---------- QR ---------- */
@@ -620,8 +625,12 @@ function ttsSay(text){
 
 async function swapTo(s){
   if (s.mode === 'C') {
-    if (!tts) { const st = ttsStart(); translatedStream = st; recFeed(st); try { await tts.ac.resume(); } catch (e) {} publishTranslation(); }
-    else if (!publication) publishTranslation();
+    if (!tts) {
+      const st = ttsStart(); translatedStream = st; recFeed(st); try { await tts.ac.resume(); } catch (e) {}
+      const t = st.getAudioTracks()[0];
+      if (publication && publication.track && t) { try { await publication.track.replaceTrack(t); log('Áudio trocado para a voz fixa (C).'); } catch (e) { await unpublishTranslation(); publishTranslation(); } }
+      else publishTranslation();
+    } else if (!publication) publishTranslation();
     return;
   }
   const stream = await s.gotTrack;
@@ -639,6 +648,8 @@ async function renewSession(why){
     if (old) old.next = s;
     await swapTo(s);
     session = s;
+    if (s.mode !== 'C' && tts) setTimeout(() => { if (session && session.mode !== 'C') ttsStop(); }, 1500);
+    if (old && old.mode !== s.mode) setStatus('No ar com "' + engineLabel(s.mode) + '".');
     setTimeout(() => { try { old && old.pc.close(); } catch (e) {} }, 4000);
   } catch (e) { log('Renovação falhou: ' + e.message); setTimeout(() => renewSession('nova tentativa'), 5000); }
   clearTimeout(renewTimer); renewTimer = setTimeout(() => renewSession('50 minutos'), 50 * 60 * 1000);
@@ -686,7 +697,7 @@ async function start(){
     running = true; live = true; paused = false; startedAt = performance.now(); airMs = 0; segStart = startedAt; enText = ''; ptText = '';
     broadcast({ t:'live' });
     $('state').classList.add('on'); $('stateText').textContent = 'No ar';
-    $('stop').disabled = false; $('pause').disabled = false; $('pause').textContent = 'Pausar'; document.querySelectorAll('input[name=engine]').forEach(r => r.disabled = true); $('voiceSel').disabled = true; $('ttsVoice').disabled = true;
+    $('stop').disabled = false; $('pause').disabled = false; $('pause').textContent = 'Pausar';
     clearTimeout(renewTimer); renewTimer = setTimeout(() => renewSession('50 minutos'), 50 * 60 * 1000);
     armAutoStop();
     tick = setInterval(() => { const sec = airSeconds(); $('mTime').textContent = Math.floor(sec/60) + ':' + String(Math.floor(sec%60)).padStart(2,'0'); $('mCost').textContent = 'US$ ' + costNow(sec).toFixed(2).replace('.', ','); }, 1000);
