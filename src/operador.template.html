@@ -538,9 +538,14 @@ function startRecording(){
   const mime = pickMime();
   const ac = new (window.AudioContext || window.webkitAudioContext)();
   const dest = ac.createMediaStreamDestination();
-  rec = { ac, dest, mime, enChunks: [], origChunks: [], enSrc: null, en: null, orig: null };
+  // Nivelador de volume (compressor + ganho) para as gravações não saírem baixas.
+  const leveler = (out) => { const c = ac.createDynamicsCompressor(); c.threshold.value = -30; c.knee.value = 20; c.ratio.value = 4; c.attack.value = 0.005; c.release.value = 0.3; const g = ac.createGain(); g.gain.value = 2.2; c.connect(g); g.connect(out); return c; };
+  const enIn = leveler(dest);
+  rec = { ac, dest, enIn, mime, enChunks: [], origChunks: [], enSrc: null, en: null, orig: null };
   try { rec.en = new MediaRecorder(dest.stream, mime ? { mimeType: mime } : undefined); rec.en.ondataavailable = e => { if (e.data.size) rec.en && rec.enChunks.push(e.data); }; rec.en.start(5000); } catch (e) { log('Gravação do inglês indisponível: ' + e.message); }
-  if (originalTrack) { try { rec.orig = new MediaRecorder(new MediaStream([originalTrack]), mime ? { mimeType: mime } : undefined); rec.orig.ondataavailable = e => { if (e.data.size) rec.origChunks.push(e.data); }; rec.orig.start(5000); } catch (e) { log('Gravação do original indisponível: ' + e.message); } }
+  if (originalTrack) { try {
+    const od = ac.createMediaStreamDestination(); ac.createMediaStreamSource(new MediaStream([originalTrack])).connect(leveler(od));
+    rec.orig = new MediaRecorder(od.stream, mime ? { mimeType: mime } : undefined); rec.orig.ondataavailable = e => { if (e.data.size) rec.origChunks.push(e.data); }; rec.orig.start(5000); } catch (e) { log('Gravação do original indisponível: ' + e.message); } }
   recStartedAt = new Date(); fullEn = ''; fullPt = '';
   ['dlEn','dlOrig','dlTxt'].forEach(id => $(id).disabled = true);
   $('recState').textContent = 'Gravando…';
@@ -549,7 +554,7 @@ function startRecording(){
 function recFeed(stream){
   if (!rec) return;
   try { rec.enSrc && rec.enSrc.disconnect(); } catch (e) {}
-  try { rec.enSrc = rec.ac.createMediaStreamSource(stream); rec.enSrc.connect(rec.dest); } catch (e) { log('Gravação: ' + e.message); }
+  try { rec.enSrc = rec.ac.createMediaStreamSource(stream); rec.enSrc.connect(rec.enIn); } catch (e) { log('Gravação: ' + e.message); }
 }
 function stopRecording(){
   if (!rec) return;
