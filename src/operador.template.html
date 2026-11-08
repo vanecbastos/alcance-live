@@ -63,6 +63,22 @@ details summary{cursor:pointer;color:var(--muted);font-size:13px}
         <button class="big" id="start">Iniciar transmissão</button>
         <button class="big secondary" id="stop" disabled>Encerrar</button>
       </div>
+      <div class="row" style="margin-top:10px">
+        <div>
+          <label for="autoStop">Desligar sozinho depois de</label>
+          <select id="autoStop" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit">
+            <option value="60">1 hora</option>
+            <option value="90">1 hora e 30 minutos</option>
+            <option value="120" selected>2 horas</option>
+            <option value="180">3 horas</option>
+            <option value="0">Não desligar sozinho</option>
+          </select>
+        </div>
+        <div>
+          <label for="idleStop">Silêncio</label>
+          <label style="display:flex;gap:8px;align-items:center;color:var(--ink);margin:0;min-height:40px"><input type="checkbox" id="idleStop" checked> Desligar se nada for traduzido por 10 minutos</label>
+        </div>
+      </div>
       <div class="metrics">
         <div class="metric"><b id="mListeners">0</b><span>Ouvintes conectados</span></div>
         <div class="metric"><b id="mTime">0:00</b><span>Tempo no ar</span></div>
@@ -420,7 +436,7 @@ async function openSession(track, key){
   await s.pc.setRemoteDescription({ type:'answer', sdp: await r.text() });
   return s;
 }
-function addEn(d){ fullEn = joinDelta2(fullEn, d); enText = joinDelta(enText, d); $('outText').textContent = enText; $('outText').scrollTop = 1e9; broadcast({ t:'d', k:'en', d }); }
+function addEn(d){ lastTextAt = performance.now(); fullEn = joinDelta2(fullEn, d); enText = joinDelta(enText, d); $('outText').textContent = enText; $('outText').scrollTop = 1e9; broadcast({ t:'d', k:'en', d }); }
 function addPt(d){ fullPt = joinDelta2(fullPt, d); ptText = joinDelta(ptText, d); $('srcText').textContent = ptText; $('srcText').scrollTop = 1e9; broadcast({ t:'d', k:'pt', d }); }
 // Mede localmente se a voz em inglês ainda está tocando (mais confiável que eventos do servidor).
 let playMeter = null;
@@ -670,6 +686,7 @@ async function start(){
     $('state').classList.add('on'); $('stateText').textContent = 'No ar';
     $('stop').disabled = false; document.querySelectorAll('input[name=engine]').forEach(r => r.disabled = true); $('voiceSel').disabled = true; $('ttsVoice').disabled = true;
     clearTimeout(renewTimer); renewTimer = setTimeout(() => renewSession('50 minutos'), 50 * 60 * 1000);
+    armAutoStop();
     tick = setInterval(() => { const sec = (performance.now() - startedAt) / 1000; $('mTime').textContent = Math.floor(sec/60) + ':' + String(Math.floor(sec%60)).padStart(2,'0'); $('mCost').textContent = 'US$ ' + costNow(sec).toFixed(2).replace('.', ','); }, 1000);
     setStatus('No ar' + (engineMode() === 'B' ? ' (voz fixa)' : engineMode() === 'C' ? ' (automática + voz fixa)' : '') + '. Os celulares que escanearem o QR Code já recebem a tradução.');
   } catch (e) {
@@ -684,15 +701,35 @@ function cleanup(){
   try { ctx && ctx.close(); } catch (e) {}
   srcStream = null; ctx = null; monitorGain = null; meterAn = null; clearInterval(meterTick); $('meter').style.width = '0';
 }
-function stop(){
+/* ---------- Desligamento automático ---------- */
+let lastTextAt = 0, autoTimer = null, warnTimer = null, idleTimer = null;
+function armAutoStop(){
+  clearTimeout(autoTimer); clearTimeout(warnTimer); clearInterval(idleTimer);
+  lastTextAt = performance.now();
+  const mins = +$('autoStop').value;
+  if (mins > 0) {
+    warnTimer = setTimeout(() => { if (running) setStatus('Atenção: a transmissão desliga sozinha em 5 minutos. Para continuar, mude "Desligar sozinho depois de".'); }, (mins - 5) * 60000);
+    autoTimer = setTimeout(() => { if (running) { log('Desligada automaticamente após ' + mins + ' min.'); stop('Transmissão desligada automaticamente (limite de ' + mins + ' min).'); } }, mins * 60000);
+  }
+  idleTimer = setInterval(() => {
+    if (running && $('idleStop').checked && performance.now() - lastTextAt > 10 * 60000) { log('Desligada por 10 min sem tradução.'); stop('Transmissão desligada: 10 minutos sem nada para traduzir.'); }
+  }, 30000);
+}
+$('autoStop').onchange = () => { store.set('autoStop', $('autoStop').value); if (running) { armAutoStop(); setStatus('Novo limite aplicado a partir de agora.'); } };
+$('idleStop').onchange = () => store.set('idleStop', $('idleStop').checked ? '1' : '0');
+if (store.get('autoStop')) $('autoStop').value = store.get('autoStop');
+if (store.get('idleStop') === '0') $('idleStop').checked = false;
+
+function stop(msg){
   if (!running) return;
   running = false; live = false; clearInterval(tick);
+  clearTimeout(autoTimer); clearTimeout(warnTimer); clearInterval(idleTimer);
   broadcast({ t:'end' });
   stopRecording(); unpublishTranslation(); unpublishOriginal(); originalTrack = null; ttsStop();
   translatedStream = null; cleanup();
   $('state').classList.remove('on'); $('stateText').textContent = 'Desligada';
   $('start').disabled = false; $('stop').disabled = true;
-  setStatus('Transmissão encerrada.');
+  setStatus(typeof msg === 'string' ? msg : 'Transmissão encerrada.');
 }
 $('start').onclick = start;
 $('stop').onclick = stop;
