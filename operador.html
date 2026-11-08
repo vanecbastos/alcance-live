@@ -61,6 +61,7 @@ details summary{cursor:pointer;color:var(--muted);font-size:13px}
       <div class="state" id="state"><span class="dot"></span><span id="stateText">Desligada</span></div>
       <div class="actions">
         <button class="big" id="start">Iniciar transmissão</button>
+        <button class="big secondary" id="pause" disabled>Pausar</button>
         <button class="big secondary" id="stop" disabled>Encerrar</button>
       </div>
       <div class="row" style="margin-top:10px">
@@ -681,13 +682,13 @@ async function start(){
     session = await openSession(track, key);
     swapTo(session);
     if (ctx.state === 'suspended') await ctx.resume();
-    running = true; live = true; startedAt = performance.now(); enText = ''; ptText = '';
+    running = true; live = true; paused = false; startedAt = performance.now(); airMs = 0; segStart = startedAt; enText = ''; ptText = '';
     broadcast({ t:'live' });
     $('state').classList.add('on'); $('stateText').textContent = 'No ar';
-    $('stop').disabled = false; document.querySelectorAll('input[name=engine]').forEach(r => r.disabled = true); $('voiceSel').disabled = true; $('ttsVoice').disabled = true;
+    $('stop').disabled = false; $('pause').disabled = false; $('pause').textContent = 'Pausar'; document.querySelectorAll('input[name=engine]').forEach(r => r.disabled = true); $('voiceSel').disabled = true; $('ttsVoice').disabled = true;
     clearTimeout(renewTimer); renewTimer = setTimeout(() => renewSession('50 minutos'), 50 * 60 * 1000);
     armAutoStop();
-    tick = setInterval(() => { const sec = (performance.now() - startedAt) / 1000; $('mTime').textContent = Math.floor(sec/60) + ':' + String(Math.floor(sec%60)).padStart(2,'0'); $('mCost').textContent = 'US$ ' + costNow(sec).toFixed(2).replace('.', ','); }, 1000);
+    tick = setInterval(() => { const sec = airSeconds(); $('mTime').textContent = Math.floor(sec/60) + ':' + String(Math.floor(sec%60)).padStart(2,'0'); $('mCost').textContent = 'US$ ' + costNow(sec).toFixed(2).replace('.', ','); }, 1000);
     setStatus('No ar' + (engineMode() === 'B' ? ' (voz fixa)' : engineMode() === 'C' ? ' (automática + voz fixa)' : '') + '. Os celulares que escanearem o QR Code já recebem a tradução.');
   } catch (e) {
     log(String(e)); setStatus(e.message || String(e), true); cleanup(); $('start').disabled = false;
@@ -712,7 +713,7 @@ function armAutoStop(){
     autoTimer = setTimeout(() => { if (running) { log('Desligada automaticamente após ' + mins + ' min.'); stop('Transmissão desligada automaticamente (limite de ' + mins + ' min).'); } }, mins * 60000);
   }
   idleTimer = setInterval(() => {
-    if (running && $('idleStop').checked && performance.now() - lastTextAt > 10 * 60000) { log('Desligada por 10 min sem tradução.'); stop('Transmissão desligada: 10 minutos sem nada para traduzir.'); }
+    if (running && !paused && $('idleStop').checked && performance.now() - lastTextAt > 10 * 60000) { log('Desligada por 10 min sem tradução.'); stop('Transmissão desligada: 10 minutos sem nada para traduzir.'); }
   }, 30000);
 }
 $('autoStop').onchange = () => { store.set('autoStop', $('autoStop').value); if (running) { armAutoStop(); setStatus('Novo limite aplicado a partir de agora.'); } };
@@ -728,11 +729,45 @@ function stop(msg){
   stopRecording(); unpublishTranslation(); unpublishOriginal(); originalTrack = null; ttsStop();
   translatedStream = null; cleanup();
   $('state').classList.remove('on'); $('stateText').textContent = 'Desligada';
-  $('start').disabled = false; $('stop').disabled = true;
+  $('start').disabled = false; $('stop').disabled = true; $('pause').disabled = true; $('pause').textContent = 'Pausar'; paused = false;
   setStatus(typeof msg === 'string' ? msg : 'Transmissão encerrada.');
 }
 $('start').onclick = start;
 $('stop').onclick = stop;
+
+/* ---------- Pausar / Retomar (ex.: durante o louvor) ---------- */
+let paused = false, airMs = 0, segStart = 0, resuming = false;
+function airSeconds(){ return (airMs + (paused ? 0 : performance.now() - segStart)) / 1000; }
+function pauseTranslation(){
+  if (!running || paused) return;
+  paused = true; live = false; airMs += performance.now() - segStart;
+  clearTimeout(renewTimer);
+  const s = session; session = null;
+  try { s && s.pc.close(); } catch (e) {}
+  if (tts) { tts.buf = ''; clearTimeout(tts.timer); }
+  if (rec) for (const m of [rec.en, rec.orig]) if (m && m.state === 'recording') try { m.pause(); } catch (e) {}
+  broadcast({ t:'pause' });
+  $('pause').textContent = 'Retomar'; $('stateText').textContent = 'Pausada'; $('state').classList.remove('on');
+  setStatus('Pausada. A IA não está traduzindo nem cobrando. Clique em Retomar quando a pregação continuar.');
+  log('Tradução pausada.');
+}
+async function resumeTranslation(){
+  if (!running || !paused || resuming) return;
+  resuming = true; $('pause').disabled = true; setStatus('Retomando…');
+  try {
+    const s = await openSession(srcStream.getAudioTracks()[0], store.get('key'));
+    session = s; await swapTo(s);
+    paused = false; live = true; segStart = performance.now(); lastTextAt = performance.now();
+    if (rec) for (const m of [rec.en, rec.orig]) if (m && m.state === 'paused') try { m.resume(); } catch (e) {}
+    clearTimeout(renewTimer); renewTimer = setTimeout(() => renewSession('50 minutos'), 50 * 60 * 1000);
+    broadcast({ t:'live' });
+    $('pause').textContent = 'Pausar'; $('stateText').textContent = 'No ar'; $('state').classList.add('on');
+    setStatus('No ar de novo. Os celulares voltam a receber a tradução.');
+    log('Tradução retomada.');
+  } catch (e) { log('Falha ao retomar: ' + (e.message || e)); setStatus('Não consegui retomar: ' + (e.message || e) + ' Tente de novo.', true); }
+  resuming = false; $('pause').disabled = false;
+}
+$('pause').onclick = () => paused ? resumeTranslation() : pauseTranslation();
 window.addEventListener('beforeunload', e => { if (running || (rec && !$('dlEn').disabled)) { e.preventDefault(); e.returnValue = ''; } });
 </script>
 </body>

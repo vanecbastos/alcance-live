@@ -217,6 +217,7 @@ async function connect(){
       if (msg.t === 'hello') { enText = msg.en || ''; ptText = msg.pt || ''; render(); if (msg.live) liveNow(); else { setLive(false, 'Starting soon'); setStatus('Connected. The translation starts when the service begins.', true); } }
       else if (msg.t === 'd') { if (msg.k === 'en') enText = joinDelta(enText, msg.d); else ptText = joinDelta(ptText, msg.d); render(); if (!isLive) liveNow(); }
       else if (msg.t === 'live') liveNow();
+      else if (msg.t === 'pause') { setLive(false, 'Paused'); setStatus('Translation paused for worship. It will continue soon.'); }
       else if (msg.t === 'end') { setLive(false, 'Ended'); setStatus('The translation has ended. Thank you for joining!'); }
     });
     room.on(LK.RoomEvent.Reconnecting, () => setStatus('Reconnecting…'));
