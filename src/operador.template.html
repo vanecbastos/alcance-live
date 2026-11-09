@@ -356,7 +356,8 @@ openChannel();
 /* ---------- Tradução ---------- */
 let meterAn = null, meterTick = null;
 let ctx, srcStream, monitorGain, translatedEl, tick, startedAt = 0, running = false;
-function joinDelta(text, d){ d = d || ''; if (text && d && ((/[^\s]$/.test(text) && /^[A-ZÀ-Ý"“(]/.test(d)) || (/[.,!?;:”"']$/.test(text) && /^[A-Za-zÀ-ú]/.test(d)))) text += ' '; text += d; return text.length > 20000 ? text.slice(-15000) : text; }
+function joinRaw(text, d){ d = d || ''; if (text && d && ((/[^\s]$/.test(text) && /^[A-ZÀ-Ý"“(]/.test(d)) || (/[.,!?;:”"']$/.test(text) && /^[A-Za-zÀ-ú]/.test(d)))) text += ' '; return text + d; }
+function joinDelta(text, d){ text = joinRaw(text, d); return text.length > 20000 ? text.slice(-15000) : text; }
 
 /* ---------- Motores de tradução ---------- */
 // Motor A: gpt-realtime-translate (voz imita o pregador). Motor B: modelo de conversa com voz fixa, instruções e glossário.
@@ -538,7 +539,7 @@ function handleEvent(s, e){
 }
 /* ---------- Gravação ---------- */
 let fullEn = '', fullPt = '', rec = null, recStartedAt = null;
-function joinDelta2(text, d){ const t = joinDelta(text + '', d); return t.length < text.length ? text + d : t; }
+function joinDelta2(text, d){ return joinRaw(text + '', d); }
 function pickMime(){ for (const m of ['audio/mp4;codecs=mp4a.40.2', 'audio/mp4', 'audio/webm;codecs=opus', 'audio/webm']) if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m; return ''; }
 function startRecording(){
   if (!$('recOn').checked || !window.MediaRecorder) return;
