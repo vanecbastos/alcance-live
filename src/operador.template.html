@@ -605,15 +605,16 @@ function ttsSay(text){
         const r = await fetch('https://api.openai.com/v1/audio/speech', { method:'POST', headers:{ Authorization:`Bearer ${key}`, 'Content-Type':'application/json' },
           body: JSON.stringify({ model:'gpt-4o-mini-tts', voice: t.voice, input: text, response_format:'wav',
             instructions:'You are the voice of a live church interpreter. Speak naturally and clearly at a steady, slightly brisk pace, with warmth, following the emotion of the words.' }) });
-        if (!r.ok) { const body = (await r.text()).slice(0, 160); log('Voz fixa (C) recusada (' + r.status + '): ' + body); if (r.status === 400 && t.voice !== 'coral') { t.voice = 'coral'; continue; } return null; }
+        if (!r.ok) { const body = (await r.text()).slice(0, 160); t.lastErr = 'erro ' + r.status + (r.status === 401 ? ' (chave)' : r.status === 403 ? ' (permissão da chave)' : r.status === 429 ? ' (limite ou crédito)' : ''); log('Voz fixa (C) recusada (' + r.status + '): ' + body); if (r.status === 400 && t.voice !== 'coral') { t.voice = 'coral'; continue; } return null; }
         ttsCost += text.length * 0.6e-6 + (text.split(/\s+/).length / 2.5) * 50 * 12e-6;
         return await t.ac.decodeAudioData(await r.arrayBuffer());
-      } catch (e) { log('Voz fixa (C): ' + e.message); }
+      } catch (e) { t.lastErr = e.message; log('Voz fixa (C): ' + e.message); }
     }
     return null;
   })();
   t.chain = t.chain.then(async () => {
-    const buf = await audioP; if (!buf || tts !== t) return;
+    const buf = await audioP; if (tts !== t) return;
+    if (!buf) { ttsFailed(t); return; } t.fails = 0;
     const src = t.ac.createBufferSource(); src.buffer = buf;
     const backlog = Math.max(0, t.next - t.ac.currentTime);
     src.playbackRate.value = backlog > 8 ? 1.15 : backlog > 4 ? 1.07 : 1;
@@ -623,6 +624,15 @@ function ttsSay(text){
   });
 }
 
+// Se a voz fixa falhar 3 vezes seguidas, avisa em vermelho e passa para a voz automática (A), para o culto não ficar sem som.
+function ttsFailed(t){
+  t.fails++;
+  if (t.fails === 3 && running && !paused && session && session.mode === 'C') {
+    log('Voz fixa (C) falhou 3 vezes (' + (t.lastErr || '?') + '). Trocando para a voz automática (A).');
+    document.querySelector('input[name=engine][value=A]').checked = true; $('voiceRow').hidden = true; $('ttsRow').hidden = true;
+    renewSession('voz fixa falhou').then(() => setStatus('A voz fixa (C) não respondeu (' + (t.lastErr || 'sem detalhe') + '). Troquei sozinha para a voz automática (A) para não ficar sem som.', true));
+  }
+}
 async function swapTo(s){
   if (s.mode === 'C') {
     if (!tts) {
