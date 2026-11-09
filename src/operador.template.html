@@ -105,6 +105,11 @@ details summary{cursor:pointer;color:var(--muted);font-size:13px}
           <option value="ash">Ash · masculina</option>
           <option value="echo">Echo · masculina</option>
         </select>
+        <label for="ttsStyle" style="margin-top:8px;display:block">Estilo da voz</label>
+        <select id="ttsStyle" style="width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit">
+          <option value="stable">Estável: soa sempre como a mesma pessoa (recomendado)</option>
+          <option value="expressive">Expressiva: mais emoção, mas o timbre pode variar entre frases</option>
+        </select>
       </div>
       <div id="voiceRow">
         <label for="voiceSel">Voz fixa</label>
@@ -246,6 +251,8 @@ function syncEngine(){ $('voiceRow').hidden = engineMode() !== 'B'; $('ttsRow').
 { const eg = store.get('engine'); if (eg === 'A' || eg === 'B' || eg === 'C') document.querySelector('input[name=engine][value=' + eg + ']').checked = true; }
 if (store.get('voice')) $('voiceSel').value = store.get('voice');
 if (store.get('tts')) $('ttsVoice').value = store.get('tts');
+if (store.get('ttsStyle')) $('ttsStyle').value = store.get('ttsStyle');
+$('ttsStyle').onchange = () => { store.set('ttsStyle', $('ttsStyle').value); if (tts) { setStatus('Estilo trocado. A próxima frase já sai assim.'); log('Estilo da voz (C): ' + $('ttsStyle').value); } };
 // Trocas com a transmissão no ar: aplicadas sem encerrar (ouvintes, texto e gravação continuam).
 document.querySelectorAll('input[name=engine]').forEach(r => r.onchange = () => {
   syncEngine();
@@ -602,11 +609,14 @@ function ttsSay(text){
   const audioP = (async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        const r = await fetch('https://api.openai.com/v1/audio/speech', { method:'POST', headers:{ Authorization:`Bearer ${key}`, 'Content-Type':'application/json' },
-          body: JSON.stringify({ model:'gpt-4o-mini-tts', voice: t.voice, input: text, response_format:'wav',
-            instructions:'You are the voice of a live church interpreter. Speak naturally and clearly at a steady, slightly brisk pace, with warmth, following the emotion of the words.' }) });
-        if (!r.ok) { const body = (await r.text()).slice(0, 160); t.lastErr = 'erro ' + r.status + (r.status === 401 ? ' (chave)' : r.status === 403 ? ' (permissão da chave)' : r.status === 429 ? ' (limite ou crédito)' : ''); log('Voz fixa (C) recusada (' + r.status + '): ' + body); if (r.status === 400 && t.voice !== 'coral') { t.voice = 'coral'; continue; } return null; }
-        ttsCost += text.length * 0.6e-6 + (text.split(/\s+/).length / 2.5) * 50 * 12e-6;
+        // Estável: tts-1 (mesmo timbre em todas as frases). Expressiva: gpt-4o-mini-tts (mais emoção, timbre varia).
+        const stable = $('ttsStyle').value !== 'expressive';
+        const body = stable ? { model:'tts-1', voice: t.voice, input: text, response_format:'wav', speed: 1.05 }
+          : { model:'gpt-4o-mini-tts', voice: t.voice, input: text, response_format:'wav',
+              instructions:'You are the voice of a live church interpreter. Keep exactly the same voice, pitch and timbre in every sentence, as one single person. Speak clearly at a steady, slightly brisk pace, with gentle warmth. Do not act or change character.' };
+        const r = await fetch('https://api.openai.com/v1/audio/speech', { method:'POST', headers:{ Authorization:`Bearer ${key}`, 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+        if (!r.ok) { const body = (await r.text()).slice(0, 160); t.lastErr = 'erro ' + r.status + (r.status === 401 ? ' (chave)' : r.status === 403 ? ' (permissão da chave)' : r.status === 429 ? ' (limite ou crédito)' : ''); log('Voz fixa (C) recusada (' + r.status + '): ' + body); if (r.status === 400 && t.voice !== 'nova') { t.voice = 'nova'; continue; } return null; }
+        ttsCost += stable ? text.length * 15e-6 : text.length * 0.6e-6 + (text.split(/\s+/).length / 2.5) * 50 * 12e-6;
         return await t.ac.decodeAudioData(await r.arrayBuffer());
       } catch (e) { t.lastErr = e.message; log('Voz fixa (C): ' + e.message); }
     }
